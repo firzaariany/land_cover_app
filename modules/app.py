@@ -24,7 +24,7 @@ max_year = xr_ds.time.max().values.flatten()[0]
 with open("data/global_adm_borders.geojson", "r") as f:
     data = json.load(f)
     data_gdf = gpd.read_file("data/global_adm_borders.geojson").set_index(["GID_0"])
-    
+
 select_country = ["MYS", "CRI", "NZL", "NOR", "IDN"]
 
 # -----------------
@@ -43,19 +43,14 @@ app_ui = ui.page_sidebar(
                 "NZL": "New Zealand",
                 "IDN": "Indonesia",
             },
-            selected="MYS"
+            selected="MYS",
         ),
         ui.input_slider(
-            "year",
-            "Select a year",
-            min=min_year, max=max_year, value=2015,
-            sep=""
+            "year", "Select a year", min=min_year, max=max_year, value=2015, sep=""
         ),
-        ui.input_dark_mode(mode="dark")
+        ui.input_dark_mode(mode="dark"),
     ),
-    ui.card(
-        output_widget("map")
-    ),
+    ui.card(output_widget("map")),
     title="Explore Land Cover Data",
     fillable=True,
 )
@@ -63,25 +58,26 @@ app_ui = ui.page_sidebar(
 # -----------------
 # CONTENT
 # -----------------
+
 def server(input, output, session):
     # Render the map once and perform partial updates via reactive effects
     m = Map()
     m.add_control(LayersControl())
     register_widget("map", m)
-    
+
     # Initialise colormap for raster
-    colormap = {"2": [34, 139, 34]} # Only for forest
-    colormap_str = json.dumps(colormap) 
-    
+    colormap = {"2": [34, 139, 34]}  # Only for forest
+    colormap_str = json.dumps(colormap)
+
     # Create empty GeoJSON border layer
     border_layer = GeoJSON(
         data={"type": "FeatureCollection", "features": []},
         style={"color": "black", "fillColor": "transparent", "weight": 2},
         # hover_style={"fillColor": "salmon", "fillOpacity": 0.3},
-        name="Country Border"
+        name="Country Border",
     )
     m.add_layer(border_layer)
-    
+
     # Raster, served via Titiler
     @reactive.effect
     def tile():
@@ -98,19 +94,19 @@ def server(input, output, session):
                 opacity=0.5,
             )
             m.add_layer(tile)
-    
+
     # Show country border upon country selection
     @reactive.effect
     def _():
         sel_iso = input.country()
         print("Selected country", sel_iso)
-        
+
         # Recenter the map view
         gdf_iso = data_gdf.loc[[sel_iso]]
         min_lon, min_lat, max_lon, max_lat = gdf_iso.total_bounds
         center_p = ((min_lat + max_lat) / 2, (min_lon + max_lon) / 2)
         m.center = center_p
-        
+
         # Create a single-country GeoJSON dataframe
         select_feature = next(
             feature
@@ -121,7 +117,7 @@ def server(input, output, session):
             "type": "FeatureCollection",
             "features": [select_feature],
         }
-        
+
         # Adjust zoom level
         sel_bounds = get_raster_bounds(
             f"/Users/user/Documents/code/shiny_land_app/data/COG/{sel_iso}/{sel_iso}_Forest_2015.tiff"
@@ -131,89 +127,13 @@ def server(input, output, session):
 # -----------------
 # SUPPORTING FUNCTIONS
 # -----------------
+
 # Instead of setting the zoom, fit the view into the raster bounds
 def get_raster_bounds(nc_path):
     ds = xr.open_dataset(nc_path).sel(band=1)
     ds = ds.rio.write_crs("EPSG:4326") if not ds.rio.crs else ds
     bounds = ds.rio.bounds()
     return bounds
-# ### THIS WORKS ###
-# def server(input, output, session):
 
-#     # Initialise basemap
-#     m = Map(zoom=4)
-#     m.add_control(LayersControl())
-#     register_widget("map", m)
-#     # output.m = output_widget("map")
-
-#     # Borders of the selected countries
-#     border_layer = GeoJSON(
-#         data=sel_iso_features,
-#         style={
-#             "color" : "black",
-#             "fillColor" : "transparent",
-#             "weight" : 2
-#         },
-#         hover_style = {
-#             "fillColor" : "salmon",
-#             "fillOpacity" : 0.5
-#         },
-#         name="Country Border"
-#     )
-
-#     m.add_layer(border_layer)
-
-#     # Update center whenever user gives input
-#     @reactive.effect
-#     def _():
-#         sel_input = input.country()
-#         gdf_iso = data_gdf.loc[[sel_input]]
-#         min_lon, min_lat, max_lon, max_lat = gdf_iso.total_bounds
-#         center_p = ((min_lat + max_lat) / 2, (min_lon + max_lon) / 2)
-#         m.center = center_p
-
-# @output
-# @render_widget
-# def map():
-#     # sel_iso = input.country()
-#     # sel_year = input.year()
-#     iso_gadm = country_border()
-
-#     min_lon, min_lat, max_lon, max_lat = iso_gadm.total_bounds
-#     center_p = ((min_lat + max_lat) / 2, (min_lon + max_lon) / 2)
-
-#     # Country border
-#     geo_json_data = json.loads(iso_gadm.to_json())
-
-#     geo_layer = GeoJSON(
-#         data=geo_json_data,
-#         style={
-#             "color": "black",
-#             "fillColor": "transparent",
-#             "weight": 2,
-#         },
-#         hover_style={"fillColor": "salmon", "fillOpacity": 0.3},
-#         name="Country Border",
-#     )
-#     m.add_layer(geo_layer)
-
-# # Get raster bounds
-# cog_file = f"/Users/user/Documents/code/shiny_land_app/data/COG/{sel_iso}/{sel_iso}_Agriculture_{sel_year}.tiff"
-
-# # Raster, served via Titiler
-# tile = TileLayer(
-#     url=f"http://127.0.0.1:8000/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png?url=file://{cog_file}",
-#     name="Agriculture",
-#     opacity=0.5,
-# )
-# m.add_layer(tile)
-
-# return m
-
-
-# app_ui = ui.page_sidebar(
-#     sidebar_ui("sidebar"),
-#     main=output_widget("map") # If I place the map in a card, I don't have to call it here again
-# )
 
 app = App(app_ui, server)
