@@ -1,3 +1,5 @@
+# Module to run Titiler FastAPI
+
 from fastapi import FastAPI
 from titiler.core.factory import TilerFactory
 
