@@ -1,0 +1,15 @@
+__pycache__
+*.zip
+*.cpg
+*.dbf
+*.prj
+*.shp
+*.shx
+data/COG
+data/gadm_raw
+data/IDN
+data/test_nb.py
+modules/__pycache__
+GIS_viz.ipynb
+main.py
+
