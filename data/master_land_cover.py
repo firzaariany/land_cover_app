@@ -92,19 +92,19 @@ def concat_land_cover(iso):
             else:
                 raise ValueError(f"Unsupported file format: {ext}")
 
-        # Here you extract year from datetime - only for tif and nc
-        raster["time"] = pd.to_datetime(raster.time).year
-        raster_to_concat.append(raster)
+            # Here you extract year from datetime - only for tif and nc
+            raster["time"] = pd.to_datetime(raster.time).year
+            raster_to_concat.append(raster)
 
-    raster_all_years = xr.concat(raster_to_concat, dim="time").sortby("time")
-    raster_all_years = raster_all_years.rio.write_crs("EPSG:4326")
+        raster_all_years = xr.concat(raster_to_concat, dim="time").sortby("time")
+        raster_all_years = raster_all_years.rio.write_crs("EPSG:4326")
 
-    # Add country and CRS identifier
-    raster_all_years.attrs["country"] = iso
-    raster_all_years.attrs["CRS EPSG"] = raster_all_years.rio.crs.to_epsg()
+        # Add country and CRS identifier
+        raster_all_years.attrs["country"] = iso
+        raster_all_years.attrs["CRS EPSG"] = raster_all_years.rio.crs.to_epsg()
 
-    # Export the integrated .nc file before deleting originals
-    raster_all_years.to_netcdf(output_file, format="NETCDF4", engine="netcdf4")
+        # Export the integrated .nc file before deleting originals
+        raster_all_years.to_netcdf(output_file, format="NETCDF4", engine="netcdf4")
 
     # Delete individual .nc files
     for nc_file in nc_files:
@@ -124,7 +124,7 @@ def concat_land_cover(iso):
 
 
 select_country = ["MYS", "CRI", "NZL", "NOR", "IDN"]
-for reg in ["IDN"]: # select_country:
+for reg in select_country:
 
     extract_land_cover(iso=reg)
 
