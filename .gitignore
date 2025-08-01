@@ -1,4 +1,5 @@
 __pycache__
+.DS_Store
 *.zip
 *.cpg
 *.dbf
@@ -9,6 +10,12 @@ data/COG
 data/gadm_raw
 data/IDN
 data/test_nb.py
+data/.DS_Store
+data/CRI/
+data/MYS/
+data/NOR/
+data/NZL/
+data/test_nb.ipynb
 modules/__pycache__
 GIS_viz.ipynb
 main.py
