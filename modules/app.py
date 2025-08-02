@@ -10,6 +10,7 @@ from ipyleaflet import (
     LayersControl,
     GeoJSON,
 )
+import time
 
 # -----------------
 # DATA PREPARATION
@@ -46,7 +47,7 @@ app_ui = ui.page_sidebar(
             selected="MYS",
         ),
         ui.input_slider(
-            "year", "Select a year", min=min_year, max=max_year, value=2015, sep=""
+            "year", "Select a year", min=min_year, max=max_year, value=min_year, sep=""
         ),
         ui.input_dark_mode(mode="dark"),
     ),
@@ -80,8 +81,14 @@ def server(input, output, session):
 
     # Raster, served via Titiler
     @reactive.effect
-    def tile():
+    def _():
         year = input.year()
+        
+        for layer in m.layers:
+            if layer.name.endswith(f"{year}"):
+                print(f"Removing layer: {layer.name}")
+                m.remove_layer(layer)
+        
         for reg in select_country:
             # Add tiles
             cog_file = f"/Users/user/Documents/code/shiny_land_app/data/COG/{reg}/{reg}_Forest_{year}.tiff"
@@ -90,10 +97,13 @@ def server(input, output, session):
                     f"http://127.0.0.1:8001/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
                     f"?url=file://{cog_file}&colormap={colormap_str}&nodata=-9999"
                 ),
-                name="Forest",
+                name=f"Forest_{reg}_{year}",
                 opacity=0.5,
             )
+            print(cog_file)
+            
             m.add_layer(tile)
+                
 
     # Show country border upon country selection
     @reactive.effect
@@ -123,6 +133,7 @@ def server(input, output, session):
             f"/Users/user/Documents/code/shiny_land_app/data/COG/{sel_iso}/{sel_iso}_Forest_2015.tiff"
         )
         m.fit_bounds([[sel_bounds[1], sel_bounds[0]], [sel_bounds[3], sel_bounds[2]]])
+        
 
 # -----------------
 # SUPPORTING FUNCTIONS
