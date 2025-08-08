@@ -56,6 +56,14 @@ for file in os.listdir(GADM_DIR):
 # Country borders in the world
 global_borders = pd.concat(iso_dict.values()).reset_index(drop=True)
 
-# Export for future use
+# Export for future use (as a shapefile)
 global_borders.to_file("data/global_adm_borders.shp")
 print("Global borders saved to data/global_adm_borders.shp")
+
+# Export as GeoJSON
+# Drop rows without geometry
+gadm = global_borders.dropna(subset=["geometry"])
+
+# Export to json
+gadm.to_file("data/global_adm_borders.geojson", driver="GeoJSON")
+print("Global borders saved to data/global_adm_borders.geojson")
