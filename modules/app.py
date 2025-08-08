@@ -17,7 +17,7 @@ import time
 # -----------------
 
 # Get max and min years from raster
-xr_ds = xr.open_dataset("data/CRI/CRI_master_land_cover.nc")
+xr_ds = xr.open_dataset("data/MYS/MYS_master_land_cover.nc")
 min_year = xr_ds.time.min().values.flatten()[0]
 max_year = xr_ds.time.max().values.flatten()[0]
 
