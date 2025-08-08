@@ -94,7 +94,7 @@ def server(input, output, session):
             cog_file = f"/Users/user/Documents/code/shiny_land_app/data/COG/{reg}/{reg}_Forest_{year}.tiff"
             tile = TileLayer(
                 url=(
-                    f"http://127.0.0.1:8001/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
+                    f"http://titiler:8001/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
                     f"?url=file://{cog_file}&colormap={colormap_str}&nodata=-9999"
                 ),
                 name=f"Forest_{reg}_{year}",
@@ -102,8 +102,7 @@ def server(input, output, session):
             )
             print(cog_file)
             
-            m.add_layer(tile)
-                
+            m.add_layer(tile)                
 
     # Show country border upon country selection
     @reactive.effect

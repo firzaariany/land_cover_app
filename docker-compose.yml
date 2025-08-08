@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  titiler:
+    build: ./titiler
+    container_name: titiler
+    ports:
+      - "8001:8001"
+
+  shiny:
+    build: ./shiny
+    container_name: shiny
+    ports:
+      - "8000:8000"
+    depends_on:
+      - titiler
