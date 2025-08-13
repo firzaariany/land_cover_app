@@ -91,7 +91,9 @@ def server(input, output, session):
         
         for reg in select_country:
             # Add tiles
-            cog_file = f"/Users/user/Documents/code/shiny_land_app/data/COG/{reg}/{reg}_Forest_{year}.tiff"
+            # cog_file = f"/Users/user/Documents/code/shiny_land_app/data/COG/{reg}/{reg}_Forest_{year}.tiff"
+            # Access COG file from mounted volume
+            cog_file = f"/data/COG/{reg}/{reg}_Forest_{year}.tiff"
             tile = TileLayer(
                 url=(
                     f"http://titiler:8001/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"

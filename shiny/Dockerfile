@@ -4,20 +4,22 @@ FROM continuumio/miniconda3
 # Set working directory
 WORKDIR /app
 
-# Copy requirements file
+# Copy environment.yml and app files
 COPY environment.yml .
-
-# Install dependencies
-RUN conda env create -f environment.yml
-
-# Ensure the conda environment is activated
-SHELL ["conda", "run", "-n", "shiny_land", "/bin/bash", "-c"]
-
-# Copy app files
 COPY . .
 
-# Expose Shiny port
+# Install dependencies and create conda env
+RUN conda env create -f environment.yml
+
+# Use bash shell so we can source conda properly
+SHELL ["/bin/bash", "-c"]
+
+# Ensure conda is initialized on shell startup
+RUN echo "source /opt/conda/etc/profile.d/conda.sh" >> ~/.bashrc
+
+# Expose the port Shiny will use
 EXPOSE 8000
 
-# Activate conda environment again and run Shiny
-CMD ["conda", "run", "-n", "shiny_land", "shiny", "run", "--host", "0.0.0.0", "--port", "8000", "--reload", "app.py"]
+# Use the full path to shiny in CMD with conda run to avoid PATH issues
+# CMD ["conda", "run", "-n", "shiny_app", "/opt/conda/envs/shiny_app/bin/shiny", "run", "--host", "0.0.0.0", "--port", "8000", "--reload", "app.py"]
+CMD ["conda", "run", "-n", "shiny_app", "/opt/conda/envs/shiny_app/bin/shiny", "run", "--host", "0.0.0.0", "--port", "8000", "app.py"]

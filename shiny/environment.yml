@@ -1,23 +1,25 @@
-name: shiny_land
+name: shiny_app
 channels:
     - conda-forge
 dependencies:
     - python=3.11
-    - pandas
-    - numpy
-    - matplotlib
-    - geopandas
-    - rioxarray
-    - rasterio 
     - xarray
-    - folium
-    - leafmap
+    - rioxarray
+    - geopandas
+    - rasterio 
     - shiny
+    - ipyleaflet
     - pip
     - pip:
-        - cdsapi>=0.7.4
-        - pycountry
-        - netCDF4
         - shinywidgets
-        - dask
-        - titiler.core
+    # - pandas
+    # - numpy
+    # - matplotlib
+    # - folium
+    # - leafmap
+    # - pip:
+    #     - cdsapi>=0.7.4
+    #     - pycountry
+    #     - netCDF4
+    #     - dask
+    #     - titiler.core

@@ -2,10 +2,14 @@ version: "3.9"
 
 services:
   titiler:
-    build: ./titiler
+    image: ghcr.io/developmentseed/titiler:latest
     container_name: titiler
+    platform: linux/amd64
     ports:
       - "8001:8001"
+    volumes:
+      - ./data/COG:/data/COG
+    command: uvicorn titiler.application.main:app --host 0.0.0.0 --port 8001 --workers 1
 
   shiny:
     build: ./shiny
