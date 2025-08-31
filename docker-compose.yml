@@ -9,7 +9,7 @@ services:
     ports:
       - "8001:8001"
     volumes:
-      - ./data:/app/data
+      - ./data/COG:/app/data/COG
     command: uvicorn titiler.application.main:app --host 0.0.0.0 --port 8001 --workers 1
 
   shiny:
@@ -19,6 +19,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data 
+      - ./data/COG:/app/data/COG
+      - ./data/CSV:/app/data/CSV
+      - ./data/global_adm_borders.geojson:/app/data/global_adm_borders.geojson
     depends_on:
       - titiler

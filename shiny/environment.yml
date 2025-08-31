@@ -3,12 +3,14 @@ channels:
     - conda-forge
 dependencies:
     - python=3.11
+    - pandas
     - xarray
     - rioxarray
     - geopandas
     - rasterio 
     - shiny
     - ipyleaflet
+    - plotly
     - pip
     - pip:
         - shinywidgets

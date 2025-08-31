@@ -1,9 +1,11 @@
 from shiny import App, ui, reactive
-from shinywidgets import output_widget, register_widget
+from shinywidgets import output_widget, register_widget, render_widget
 import xarray as xr
 import rioxarray as rxr
 import geopandas as gpd
 import json
+import pandas as pd
+import plotly.express as px
 from ipyleaflet import (
     Map,
     TileLayer,
@@ -11,6 +13,7 @@ from ipyleaflet import (
     GeoJSON,
 )
 import time
+from pathlib import Path
 
 # -----------------
 # DATA PREPARATION
@@ -64,7 +67,23 @@ app_ui = ui.page_sidebar(
         ),
         ui.input_dark_mode(mode="dark"),
     ),
-    ui.card(output_widget("map")),
+    
+    # Stacked layout: Map on top, time series on bottom
+        
+    # Map takes 2/3 of the space
+    ui.card(
+        output_widget("map"),
+        height="500px",
+        fillable=True,
+    ),
+    
+    # Time series
+    ui.card(
+        output_widget("forest_area_plot"),
+        title="Forest area trends",
+        height="400px",
+        fillable=True,
+    ),
     title="Explore Land Cover Data",
     fillable=True,
 )
@@ -152,8 +171,102 @@ def server(input, output, session):
             f"/app/data/COG/{sel_iso}/{sel_iso}_Forest_2015.tiff"
         )
         m.fit_bounds([[sel_bounds[1], sel_bounds[0]], [sel_bounds[3], sel_bounds[2]]])
-
-
+    
+    # Forest area plot
+    @output
+    @render_widget
+    def forest_area_plot():
+        # Get selected country
+        sel_country = input.country()
+        
+        try:
+            # Load CSV data
+            csv_file = f"/app/data/CSV/forest_area_changes.csv"
+            if Path(csv_file).exists():
+                df = pd.read_csv(csv_file)
+                
+                # Filter data for selected country
+                country_data = df[df["Country"] == sel_country].copy()
+                
+                if not country_data.empty:
+                    # Create bar plot
+                    fig = px.bar(
+                        country_data,
+                        x="Year",
+                        y="Forest Area",
+                        title=f"Forest Area Changes in {sel_country} (2005-2021)",
+                        color_discrete_sequence=['#228B22'],
+                        opacity=0.8,
+                    )
+                    
+                    # Update layout
+                    fig.update_layout(
+                        xaxis_title="Year",
+                        yaxis_title="Forest Area<br>(million hectares)",
+                        # template="plotly_dark" if input.dark_mode() else "plotly",
+                        autosize=True,
+                        width=None,
+                        height=200,
+                        margin=dict(l=40, r=40, t=60, b=40),
+                        showlegend=False,
+                        bargap=0.1,
+                        bargroupgap=0.1,
+                    )
+                    
+                    # Update axes
+                    fig.update_xaxes(
+                        tickmode="array",
+                        tickvals=country_data["Year"].tolist()[::2],
+                        ticktext=[str(y) for y in country_data['Year'].tolist()[::2]]
+                    )
+                    
+                    # fig.update_yaxes(
+                    #     tickformat=".3f"
+                    # )
+                    
+                    return fig
+                else:
+                    # No data for selected country
+                    fig = px.bar(
+                        x=[], y=[], title=f"No data available for {sel_country}"
+                    )
+                    
+                    fig.update_layout(
+                        # template="plotly_dark" if input.dark_mode() else "plotly_white",
+                        height=200,
+                    )
+                    
+                    return fig
+                
+            else:
+                # CSV file not found
+                fig = px.bar(
+                    x=[], y=[], 
+                    title="Forest area data not found. Run the timeseries_area_change.py script to generate the data."
+                )
+                
+                fig.update_layout(
+                    # template="plotly_dark" if input.dark_mode() else "plotly_white",
+                    height=200,
+                )
+                
+                return fig
+        except Exception as e:
+            print(f"Error generating forest area plot: {e}")
+            
+            # Error fallback
+            fig = px.bar(
+                x=[], y=[], 
+                title=f"Error generating plot: {str(e)}"
+            )
+            fig.update_layout(
+                # template="plotly_dark" if input.dark_mode() else "plotly_white",
+                height=200,
+            )
+            
+            return fig
+            
+            
 # -----------------
 # SUPPORTING FUNCTIONS
 # -----------------
