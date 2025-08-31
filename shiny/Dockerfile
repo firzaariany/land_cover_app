@@ -22,4 +22,4 @@ EXPOSE 8000
 
 # Use the full path to shiny in CMD with conda run to avoid PATH issues
 # CMD ["conda", "run", "-n", "shiny_app", "/opt/conda/envs/shiny_app/bin/shiny", "run", "--host", "0.0.0.0", "--port", "8000", "--reload", "app.py"]
-CMD ["conda", "run", "-n", "shiny_app", "/opt/conda/envs/shiny_app/bin/shiny", "run", "--host", "0.0.0.0", "--port", "8000", "app.py"]
+CMD ["conda", "run", "-n", "shiny_app","/opt/conda/envs/shiny_app/bin/shiny", "run", "--host", "0.0.0.0", "--port", "8000", "app.py"]

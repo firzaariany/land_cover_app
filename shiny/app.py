@@ -16,15 +16,23 @@ import time
 # DATA PREPARATION
 # -----------------
 
-# Get max and min years from raster
-xr_ds = xr.open_dataset("data/MYS/MYS_master_land_cover.nc")
-min_year = xr_ds.time.min().values.flatten()[0]
-max_year = xr_ds.time.max().values.flatten()[0]
+
+# # Get the data
+# def get_year_range():
+#     try:
+#         xr_ds = xr.open_dataset("data/MYS/MYS_master_land_cover.nc")
+#         min_year = xr_ds.time.min().values.flatten()[0]
+#         max_year = xr_ds.time.max().values.flatten()[0]
+#         return min_year, max_year
+#     except FileNotFoundError:
+#         # Fallbaxk values if file does not exist
+#         return 2005, 2020
+
 
 # Define JSON files for mapping country borders and calculating bounds
-with open("data/global_adm_borders.geojson", "r") as f:
+with open("/app/data/global_adm_borders.geojson", "r") as f:
     data = json.load(f)
-    data_gdf = gpd.read_file("data/global_adm_borders.geojson").set_index(["GID_0"])
+    data_gdf = gpd.read_file("/app/data/global_adm_borders.geojson").set_index(["GID_0"])
 
 select_country = ["MYS", "CRI", "NZL", "NOR", "IDN"]
 
@@ -47,7 +55,12 @@ app_ui = ui.page_sidebar(
             selected="MYS",
         ),
         ui.input_slider(
-            "year", "Select a year", min=min_year, max=max_year, value=min_year, sep=""
+            "year",
+            "Select a year",
+            min=2005,
+            max=2020,
+            value=2005,
+            sep="",
         ),
         ui.input_dark_mode(mode="dark"),
     ),
@@ -59,6 +72,7 @@ app_ui = ui.page_sidebar(
 # -----------------
 # CONTENT
 # -----------------
+
 
 def server(input, output, session):
     # Render the map once and perform partial updates via reactive effects
@@ -83,28 +97,32 @@ def server(input, output, session):
     @reactive.effect
     def _():
         year = input.year()
-        
+
         for layer in m.layers:
             if layer.name.endswith(f"{year}"):
                 print(f"Removing layer: {layer.name}")
                 m.remove_layer(layer)
-        
+
         for reg in select_country:
             # Add tiles
             # cog_file = f"/Users/user/Documents/code/shiny_land_app/data/COG/{reg}/{reg}_Forest_{year}.tiff"
             # Access COG file from mounted volume
-            cog_file = f"/data/COG/{reg}/{reg}_Forest_{year}.tiff"
+            cog_file = f"/app/data/COG/{reg}/{reg}_Forest_{year}.tiff"
             tile = TileLayer(
+                # url=(
+                #     f"http://titiler:8001/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png" 
+                #     f"?url=file://{cog_file}&colormap={colormap_str}&nodata=-9999"
+                # ),
                 url=(
-                    f"http://titiler:8001/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
+                    f"http://localhost:8001/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png" 
                     f"?url=file://{cog_file}&colormap={colormap_str}&nodata=-9999"
                 ),
                 name=f"Forest_{reg}_{year}",
                 opacity=0.5,
             )
-            print(cog_file)
-            
-            m.add_layer(tile)                
+            print(f"Adding tile layer: {tile.name}")
+
+            m.add_layer(tile)
 
     # Show country border upon country selection
     @reactive.effect
@@ -131,14 +149,15 @@ def server(input, output, session):
 
         # Adjust zoom level
         sel_bounds = get_raster_bounds(
-            f"/Users/user/Documents/code/shiny_land_app/data/COG/{sel_iso}/{sel_iso}_Forest_2015.tiff"
+            f"/app/data/COG/{sel_iso}/{sel_iso}_Forest_2015.tiff"
         )
         m.fit_bounds([[sel_bounds[1], sel_bounds[0]], [sel_bounds[3], sel_bounds[2]]])
-        
+
 
 # -----------------
 # SUPPORTING FUNCTIONS
 # -----------------
+
 
 # Instead of setting the zoom, fit the view into the raster bounds
 def get_raster_bounds(nc_path):
