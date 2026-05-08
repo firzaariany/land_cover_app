@@ -21,6 +21,8 @@ dependencies = [
     "plotly",
     "shinywidgets",
     "earthengine-api",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.1",
 ]
 
 [dependency-groups]

@@ -1,5 +1,8 @@
-import asyncio
 import ee
+
+from landcover_explorer.settings import Settings
+
+import asyncio
 import geopandas as gpd
 import json
 import math
@@ -7,7 +10,6 @@ import os
 import pandas as pd
 import plotly.express as px
 import requests
-from dotenv import load_dotenv
 from ipyleaflet import (
     Map,
     TileLayer,
@@ -24,32 +26,35 @@ from shinywidgets import output_widget, register_widget, render_widget
 # -----------------
 # GEE INITIALISATION
 # -----------------
-
-load_dotenv()
+settings = Settings()
 
 credentials = ee.ServiceAccountCredentials(
-    os.getenv("GOOGLE_EARTH_SERVICE_ACCOUNT"), os.getenv("GOOGLE_EARTH_KEY")
+    settings.google_earth_service_account, str(settings.google_earth_key)
 )
 ee.Initialize(credentials)
 
-# IGBP forest classes: 1=Evergreen Needleleaf, 2=Evergreen Broadleaf,
-# 3=Deciduous Needleleaf, 4=Deciduous Broadleaf, 5=Mixed Forests
-FOREST_CODES = [1, 2, 3, 4, 5]
+FOREST_CODES = [int(x) for x in settings.forest_codes_in_collection.split(",")]
 
 # MODIS land cover
-dataset = ee.ImageCollection("MODIS/061/MCD12C1")
-igbp_land_cover = dataset.select("Majority_Land_Cover_Type_1")
+dataset = ee.ImageCollection(settings.collection_id)
+igbp_land_cover = dataset.select(settings.collection_band_name)
 
-IGBP_VIS = {
-    "min": 0,
-    "max": 16,
-    "palette": [
-        "1c0dff", "05450a", "086a10", "54a708", "78d203", "009900", "c6b044", "dcd159",
-        "dade48", "fbff13", "b6ff05", "27ff87", "c24f44", "a5a5a5", "ff6d4c",
-        "69fff8", "f9ffa4",
-    ],
-}
+GFW_DATASET = settings.gfw_dataset
+GFW_VERSION = settings.gfw_dataset_version
+GFW_URL = str(settings.gfw_api_url)
+GFW_QUERY = f"{GFW_URL}/{GFW_DATASET}/{GFW_VERSION}/query"
 
+# IGBP_VIS = {
+#     "min": 0,
+#     "max": 16,
+#     "palette": [
+#         "1c0dff", "05450a", "086a10", "54a708", "78d203", "009900", "c6b044", "dcd159",
+#         "dade48", "fbff13", "b6ff05", "27ff87", "c24f44", "a5a5a5", "ff6d4c",
+#         "69fff8", "f9ffa4",
+#     ],
+# }
+
+# Can list more countries -> To be set up in a separate module
 COUNTRY_NAMES = {
     "MYS": "Malaysia",
     "CRI": "Costa Rica",
@@ -58,21 +63,16 @@ COUNTRY_NAMES = {
     "IDN": "Indonesia",
 }
 
-GFW_DATASET = "gadm__tcl__iso_change"
-GFW_VERSION = "v20260407"
-GFW_URL = f"https://www.globalforestwatch.org/api/data/dataset/{GFW_DATASET}/{GFW_VERSION}/query"
-
 # -----------------
 # DATA PREPARATION
 # -----------------
 
+# To 
 _GEOJSON_PATH = Path(__file__).parents[3] / "data" / "global_adm_borders.geojson"
 
 with open(_GEOJSON_PATH, "r") as f:
     data = json.load(f)
     data_gdf = gpd.read_file(_GEOJSON_PATH).set_index(["GID_0"])
-
-select_country = ["MYS", "CRI", "NZL", "NOR", "IDN"]
 
 # -----------------
 # PAGE BUILDER
@@ -287,11 +287,11 @@ def server(input, output, session):
         """
 
         headers = {
-            "Authorization": f"Bearer {os.getenv('GFW_ACCESS_TOKEN')}",
-            "x-api-key": os.getenv("GFW_API_KEY"),
+            "Authorization": f"Bearer {settings.gfw_access_token}",
+            "x-api-key": settings.gfw_api_key,
         }
 
-        response = requests.get(GFW_URL, headers=headers, params={"sql": sql})
+        response = requests.get(GFW_QUERY, headers=headers, params={"sql": sql})
         response.raise_for_status()
         return pd.DataFrame(response.json()["data"])
 
@@ -305,7 +305,7 @@ def server(input, output, session):
             df = gfw_forest_loss()
 
             if df.empty:
-                fig = px.bar(x=[], y=[], title="No data available.")
+                fig = px.bar(pd.DataFrame({"Year": [], "Loss": []}), x="Year", y="Loss", title="No data available.")
                 fig.update_layout(height=300)
                 return fig
 
@@ -336,7 +336,7 @@ def server(input, output, session):
             return fig
 
         except Exception as e:
-            fig = px.bar(x=[], y=[], title=f"Error fetching data: {e}")
+            fig = px.bar(pd.DataFrame({"Year": [], "Loss": []}), x="Year", y="Loss", title=f"Error fetching data: {e}")
             fig.update_layout(height=300)
             return fig
 
