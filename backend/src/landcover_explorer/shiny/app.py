@@ -1,6 +1,7 @@
 import ee
 
 from landcover_explorer.settings import Settings
+from landcover_explorer.knowledgebase.gee_tiles_preprocess import compute_forest_mask
 
 import asyncio
 import geopandas as gpd
@@ -32,8 +33,6 @@ credentials = ee.ServiceAccountCredentials(
     settings.google_earth_service_account, str(settings.google_earth_key)
 )
 ee.Initialize(credentials)
-
-FOREST_CODES = [int(x) for x in settings.forest_codes_in_collection.split(",")]
 
 # MODIS land cover
 dataset = ee.ImageCollection(settings.collection_id)
@@ -131,7 +130,12 @@ def server(input, output, session):
     # Hover popup — cache label in a plain dict so the on_click callback
     # (which runs outside Shiny's reactive graph) can read the latest value
     popup_content = HTML("")
-    popup = Popup(child=popup_content, close_button=True, auto_close=True, name="Clickable Infobox")
+    popup = Popup(
+        child=popup_content,
+        close_button=True,
+        auto_close=True,
+        name="Clickable Infobox",
+    )
     _popup_cache = {"label": ""}
 
     def on_click(*_, **__):  # noqa: ARG001
@@ -142,6 +146,14 @@ def server(input, output, session):
         m.add_layer(popup)
 
     border_layer.on_click(on_click)  # register once
+
+    @reactive.calc
+    def selected_iso():
+        return input.country()
+
+    @reactive.calc
+    def selected_year():
+        return input.year()
 
     # Fetch MODIS IGBP tile URL clipped to the selected country and year
     # @reactive.calc
@@ -170,41 +182,31 @@ def server(input, output, session):
     # Stage 2 (parallel): getMapId and calculate_coverage are independent GEE calls.
     @reactive.effect
     async def _():
-        iso = input.country()
-        year = input.year()
+        iso = selected_iso()
+        year = selected_year()
 
         country_name = COUNTRY_NAMES.get(iso, iso)
+        
         notif_id = ui.notification_show(
             f"Loading forest data for {country_name} ({year})…",
             duration=None,
             type="message",
         )
-        await asyncio.sleep(0)  # flush notification to browser before blocking
+        await asyncio.sleep(0)
 
-        def compute_forest_mask():
-            print(f"Processing data for {iso} in {year}", flush=True)
-            country_feature = next(
-                f for f in data["features"]
-                if f["properties"]["GID_0"] == iso
-            )
-            ee_geometry = ee.Geometry(country_feature["geometry"])
-            image = (
-                igbp_land_cover
-                .filter(ee.Filter.calendarRange(year, year, "year"))
-                .first()
-            )
-            forest = (
-                image
-                .remap(FOREST_CODES, [1] * len(FOREST_CODES), 0)
-                .selfMask()
-                .clip(ee_geometry)
-            )
-            return ee_geometry, forest
+        iso_feature = next(
+            f for f in data["features"] if f["properties"]["GID_0"] == iso
+        )
+        ee_geometry = ee.Geometry(iso_feature["geometry"])
 
-        ee_geometry, forest = await asyncio.to_thread(compute_forest_mask)
+        print(f"Processing data for {iso} in {year}", flush=True)
+
+        app_forest = await asyncio.to_thread(
+            compute_forest_mask, igbp_land_cover, ee_geometry, selected_year()
+        )
 
         def get_tile_url():
-            map_id = forest.getMapId({"min": 0, "max": 1, "palette": ["#228B22"]})
+            map_id = app_forest.getMapId({"min": 0, "max": 1, "palette": ["#228B22"]})
             return map_id["tile_fetcher"].url_format
 
         def get_coverage():
@@ -212,7 +214,7 @@ def server(input, output, session):
                 iso=iso,
                 year=year,
                 country_geometry=ee_geometry,
-                category_mask=forest,
+                category_mask=app_forest,
             )
 
         tile_url, coverage = await asyncio.gather(
@@ -223,7 +225,13 @@ def server(input, output, session):
         for layer in list(m.layers):
             if layer.name.startswith("Forest_"):
                 m.remove_layer(layer)
-        m.add_layer(TileLayer(url=tile_url, name=f"Forest_{iso}_{year}", opacity=0.5))
+        m.add_layer(
+            TileLayer(
+                url=tile_url,
+                name=f"Forest_{selected_iso()}_{selected_year()}",
+                opacity=0.5,
+            )
+        )
 
         country_display = COUNTRY_NAMES.get(coverage["iso"], coverage["iso"])
         _popup_cache["label"] = (
@@ -248,14 +256,13 @@ def server(input, output, session):
     # Update border and recenter when country changes
     @reactive.effect
     def _():
-        sel_iso = input.country()
+        sel_iso = selected_iso()
 
         gdf_iso = data_gdf.loc[[sel_iso]]
         min_lon, min_lat, max_lon, max_lat = gdf_iso.total_bounds
 
         select_feature = next(
-            f for f in data["features"]
-            if f["properties"]["GID_0"] == sel_iso
+            f for f in data["features"] if f["properties"]["GID_0"] == sel_iso
         )
         border_layer.data = {
             "type": "FeatureCollection",
@@ -272,7 +279,7 @@ def server(input, output, session):
 
     @reactive.calc
     def gfw_forest_loss():
-        sel_iso = input.country()
+        sel_iso = selected_iso()
 
         sql = f"""
         SELECT
@@ -299,22 +306,31 @@ def server(input, output, session):
     @output
     @render_widget
     def forest_area_plot():
-        sel_iso = input.country()
+        sel_iso = selected_iso()
 
         try:
             df = gfw_forest_loss()
 
             if df.empty:
-                fig = px.bar(pd.DataFrame({"Year": [], "Loss": []}), x="Year", y="Loss", title="No data available.")
+                fig = px.bar(
+                    pd.DataFrame({"Year": [], "Loss": []}),
+                    x="Year",
+                    y="Loss",
+                    title="No data available.",
+                )
                 fig.update_layout(height=300)
                 return fig
 
-            df_renamed = df.rename(columns={
-                "umd_tree_cover_loss__year": "Year",
-                "umd_tree_cover_loss__ha": "Primary tree cover loss (kha)",
-            })
+            df_renamed = df.rename(
+                columns={
+                    "umd_tree_cover_loss__year": "Year",
+                    "umd_tree_cover_loss__ha": "Primary tree cover loss (kha)",
+                }
+            )
             df_renamed["Year"] = df_renamed["Year"].apply(lambda y: f"'{str(y)[2:]}")
-            df_renamed["Primary tree cover loss (kha)"] = df_renamed["Primary tree cover loss (kha)"].apply(lambda x: round(x / 1000, 2))
+            df_renamed["Primary tree cover loss (kha)"] = df_renamed[
+                "Primary tree cover loss (kha)"
+            ].apply(lambda x: round(x / 1000, 2))
 
             fig = px.bar(
                 df_renamed,
@@ -336,7 +352,12 @@ def server(input, output, session):
             return fig
 
         except Exception as e:
-            fig = px.bar(pd.DataFrame({"Year": [], "Loss": []}), x="Year", y="Loss", title=f"Error fetching data: {e}")
+            fig = px.bar(
+                pd.DataFrame({"Year": [], "Loss": []}),
+                x="Year",
+                y="Loss",
+                title=f"Error fetching data: {e}",
+            )
             fig.update_layout(height=300)
             return fig
 
