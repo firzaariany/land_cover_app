@@ -67,8 +67,8 @@ COUNTRY_NAMES = {
 # DATA PREPARATION
 # -----------------
 
-# To 
-_GEOJSON_PATH = Path(__file__).parents[3] / "data" / "global_adm_borders.geojson"
+# To be replaced with API call
+_GEOJSON_PATH = Path(__file__).parents[3] / settings.gadm_path
 
 with open(_GEOJSON_PATH, "r") as f:
     data = json.load(f)

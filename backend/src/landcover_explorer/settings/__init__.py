@@ -25,5 +25,6 @@ class Settings(BaseSettings):
     gfw_dataset: str = "gadm__tcl__iso_change"
     gfw_dataset_version: str = "v20260407"
     gfw_api_url: HttpUrl = HttpUrl("https://www.globalforestwatch.org/api/data/dataset")
+    gadm_path: Path = Path("data/global_adm_borders.geojson")
 
     model_config = SettingsConfigDict(env_file=".env", extra="allow")
