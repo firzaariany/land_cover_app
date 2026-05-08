@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+
+uv pip install -e
+uv run shiny run --reload src/landcover_explorer/shiny/app.py
