@@ -185,8 +185,9 @@ def server(input, output, session):
         iso = selected_iso()
         year = selected_year()
 
+        print(f"Processing data for {iso} in {year}", flush=True)
+
         country_name = COUNTRY_NAMES.get(iso, iso)
-        
         notif_id = ui.notification_show(
             f"Loading forest data for {country_name} ({year})…",
             duration=None,
@@ -198,8 +199,6 @@ def server(input, output, session):
             f for f in data["features"] if f["properties"]["GID_0"] == iso
         )
         ee_geometry = ee.Geometry(iso_feature["geometry"])
-
-        print(f"Processing data for {iso} in {year}", flush=True)
 
         app_forest = await asyncio.to_thread(
             compute_forest_mask, igbp_land_cover, ee_geometry, selected_year()
@@ -228,7 +227,7 @@ def server(input, output, session):
         m.add_layer(
             TileLayer(
                 url=tile_url,
-                name=f"Forest_{selected_iso()}_{selected_year()}",
+                name=f"Forest_{iso}_{year}",
                 opacity=0.5,
             )
         )
@@ -281,7 +280,12 @@ def server(input, output, session):
     def gfw_forest_loss():
         sel_iso = selected_iso()
 
-        sql = f"""
+        headers = {
+            "Authorization": f"Bearer {settings.gfw_access_token}",
+            "x-api-key": settings.gfw_api_key,
+        }
+
+        sql_primary = f"""
         SELECT
             umd_tree_cover_loss__year,
             SUM(umd_tree_cover_loss__ha) AS umd_tree_cover_loss__ha
@@ -293,13 +297,23 @@ def server(input, output, session):
         ORDER BY umd_tree_cover_loss__year
         """
 
-        headers = {
-            "Authorization": f"Bearer {settings.gfw_access_token}",
-            "x-api-key": settings.gfw_api_key,
-        }
-
-        response = requests.get(GFW_QUERY, headers=headers, params={"sql": sql})
+        response = requests.get(GFW_QUERY, headers=headers, params={"sql": sql_primary})
         response.raise_for_status()
+
+        if not response.json()["data"]:
+            sql_fallback = f"""
+        SELECT
+            umd_tree_cover_loss__year,
+            SUM(umd_tree_cover_loss__ha) AS umd_tree_cover_loss__ha
+        FROM data
+        WHERE iso = '{sel_iso}'
+            AND umd_tree_cover_density_2000__threshold = 30
+        GROUP BY umd_tree_cover_loss__year
+        ORDER BY umd_tree_cover_loss__year
+        """
+            response = requests.get(GFW_QUERY, headers=headers, params={"sql": sql_fallback})
+            response.raise_for_status()
+
         return pd.DataFrame(response.json()["data"])
 
     # Forest loss chart (GFW API)
@@ -327,7 +341,6 @@ def server(input, output, session):
                     "umd_tree_cover_loss__ha": "Primary tree cover loss (kha)",
                 }
             )
-            df_renamed["Year"] = df_renamed["Year"].apply(lambda y: f"'{str(y)[2:]}")
             df_renamed["Primary tree cover loss (kha)"] = df_renamed[
                 "Primary tree cover loss (kha)"
             ].apply(lambda x: round(x / 1000, 2))
