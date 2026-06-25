@@ -102,7 +102,7 @@ app_ui = ui.page_sidebar(
     ),
     ui.card(
         output_widget("forest_area_plot"),
-        title="Forest area trends",
+        title="Forest loss & emissions",
         height="400px",
         fillable=True,
     ),
@@ -288,7 +288,8 @@ def server(input, output, session):
         sql_primary = f"""
         SELECT
             umd_tree_cover_loss__year,
-            SUM(umd_tree_cover_loss__ha) AS umd_tree_cover_loss__ha
+            SUM(umd_tree_cover_loss__ha) AS umd_tree_cover_loss__ha,
+            SUM("gfw_gross_emissions_co2e_all_gases__Mg") AS gfw_gross_emissions_co2e_all_gases__Mg
         FROM data
         WHERE iso = '{sel_iso}'
             AND umd_tree_cover_density_2000__threshold = 30
@@ -304,7 +305,8 @@ def server(input, output, session):
             sql_fallback = f"""
         SELECT
             umd_tree_cover_loss__year,
-            SUM(umd_tree_cover_loss__ha) AS umd_tree_cover_loss__ha
+            SUM(umd_tree_cover_loss__ha) AS umd_tree_cover_loss__ha,
+            SUM("gfw_gross_emissions_co2e_all_gases__Mg") AS gfw_gross_emissions_co2e_all_gases__Mg
         FROM data
         WHERE iso = '{sel_iso}'
             AND umd_tree_cover_density_2000__threshold = 30
@@ -316,7 +318,6 @@ def server(input, output, session):
 
         return pd.DataFrame(response.json()["data"])
 
-    # Forest loss chart (GFW API)
     @output
     @render_widget
     def forest_area_plot():
@@ -327,48 +328,50 @@ def server(input, output, session):
 
             if df.empty:
                 fig = px.bar(
-                    pd.DataFrame({"Year": [], "Loss": []}),
+                    pd.DataFrame({"Year": [], "Value": [], "Metric": []}),
                     x="Year",
-                    y="Loss",
+                    y="Value",
                     title="No data available.",
                 )
                 fig.update_layout(height=300)
                 return fig
 
-            df_renamed = df.rename(
-                columns={
-                    "umd_tree_cover_loss__year": "Year",
-                    "umd_tree_cover_loss__ha": "Primary tree cover loss (kha)",
-                }
+            df["Year"] = df["umd_tree_cover_loss__year"]
+            df["Forest Loss (kha)"] = (df["umd_tree_cover_loss__ha"] / 1000).round(2)
+            df["Gross Emissions (MtCO2e)"] = (df["gfw_gross_emissions_co2e_all_gases__mg"] / 1_000_000).round(2)
+
+            df_long = df[["Year", "Forest Loss (kha)", "Gross Emissions (MtCO2e)"]].melt(
+                id_vars="Year", var_name="Metric", value_name="Value"
             )
-            df_renamed["Primary tree cover loss (kha)"] = df_renamed[
-                "Primary tree cover loss (kha)"
-            ].apply(lambda x: round(x / 1000, 2))
 
             fig = px.bar(
-                df_renamed,
+                df_long,
                 x="Year",
-                y="Primary tree cover loss (kha)",
-                labels={"Primary tree cover loss (kha)": "Tree Cover Loss (kha)"},
-                title=f"Primary Forest Loss in {COUNTRY_NAMES.get(sel_iso, sel_iso)}",
-                color_discrete_sequence=["#228B22"],
+                y="Value",
+                color="Metric",
+                barmode="overlay",
+                color_discrete_map={
+                    "Forest Loss (kha)": "#228B22",
+                    "Gross Emissions (MtCO2e)": "#8B4513",
+                },
                 opacity=0.8,
+                title=f"Forest Loss & Emissions in {COUNTRY_NAMES.get(sel_iso, sel_iso)}",
                 template="plotly_dark",
                 height=300,
             )
             fig.update_layout(
                 autosize=True,
                 margin=dict(l=40, r=40, t=60, b=60),
-                showlegend=False,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             )
             fig.update_xaxes(showticklabels=True, tickfont=dict(size=10))
             return fig
 
         except Exception as e:
             fig = px.bar(
-                pd.DataFrame({"Year": [], "Loss": []}),
+                pd.DataFrame({"Year": [], "Value": [], "Metric": []}),
                 x="Year",
-                y="Loss",
+                y="Value",
                 title=f"Error fetching data: {e}",
             )
             fig.update_layout(height=300)
