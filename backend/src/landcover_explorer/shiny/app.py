@@ -100,11 +100,20 @@ app_ui = ui.page_sidebar(
         height="500px",
         fillable=True,
     ),
-    ui.card(
-        output_widget("forest_area_plot"),
-        title="Forest loss & emissions",
-        height="400px",
-        fillable=True,
+    ui.layout_columns(
+        ui.card(
+            output_widget("forest_area_plot"),
+            title="Forest loss by driver",
+            height="400px",
+            fillable=True,
+        ),
+        ui.card(
+            output_widget("driver_class_pie"),
+            title="Loss by driver class",
+            height="400px",
+            fillable=True,
+        ),
+        col_widths=[8, 4],
     ),
     title="Explore Forest",
     fillable=True,
@@ -285,38 +294,43 @@ def server(input, output, session):
             "x-api-key": settings.gfw_api_key,
         }
 
-        sql_primary = f"""
+        sql = f"""
         SELECT
+            wri_google_tree_cover_loss_drivers__driver,
             umd_tree_cover_loss__year,
             SUM(umd_tree_cover_loss__ha) AS umd_tree_cover_loss__ha,
             SUM("gfw_gross_emissions_co2e_all_gases__Mg") AS gfw_gross_emissions_co2e_all_gases__Mg
         FROM data
         WHERE iso = '{sel_iso}'
             AND umd_tree_cover_density_2000__threshold = 30
-            AND is__umd_regional_primary_forest_2001 = 'true'
-        GROUP BY umd_tree_cover_loss__year
-        ORDER BY umd_tree_cover_loss__year
+            AND wri_google_tree_cover_loss_drivers__driver IS NOT NULL
+        GROUP BY 
+            wri_google_tree_cover_loss_drivers__driver,
+            umd_tree_cover_loss__year
         """
 
-        response = requests.get(GFW_QUERY, headers=headers, params={"sql": sql_primary})
-        response.raise_for_status()
+        response = requests.get(GFW_QUERY, headers=headers, params={"sql": sql})
 
-        if not response.json()["data"]:
-            sql_fallback = f"""
-        SELECT
-            umd_tree_cover_loss__year,
-            SUM(umd_tree_cover_loss__ha) AS umd_tree_cover_loss__ha,
-            SUM("gfw_gross_emissions_co2e_all_gases__Mg") AS gfw_gross_emissions_co2e_all_gases__Mg
-        FROM data
-        WHERE iso = '{sel_iso}'
-            AND umd_tree_cover_density_2000__threshold = 30
-        GROUP BY umd_tree_cover_loss__year
-        ORDER BY umd_tree_cover_loss__year
-        """
-            response = requests.get(GFW_QUERY, headers=headers, params={"sql": sql_fallback})
-            response.raise_for_status()
+        if not response.ok:
+            raise RuntimeError(
+                f"GFW API error {response.status_code} for {sel_iso}: {response.text[:200]}"
+            )
 
-        return pd.DataFrame(response.json()["data"])
+        # Group sub-class of tree loss drivers into larger classes
+        df = pd.DataFrame(response.json()["data"])
+
+        driver_class_map = {
+            "Hard commodities":             "Deforestation",
+            "Permanent agriculture":        "Deforestation",
+            "Settlements & Infrastructure": "Deforestation",
+            "Logging":                      "Temporary disturbances",
+            "Other natural disturbances":   "Temporary disturbances",
+            "Wildfire":                     "Temporary disturbances",
+            "Shifting cultivation":         "Temporary disturbances",
+        }
+        df["large_driver_class"] = df["wri_google_tree_cover_loss_drivers__driver"].map(driver_class_map)
+
+        return df
 
     @output
     @render_widget
@@ -327,53 +341,102 @@ def server(input, output, session):
             df = gfw_forest_loss()
 
             if df.empty:
-                fig = px.bar(
-                    pd.DataFrame({"Year": [], "Value": [], "Metric": []}),
-                    x="Year",
-                    y="Value",
-                    title="No data available.",
-                )
+                fig = px.bar(x=[], y=[], title="No data available.")
                 fig.update_layout(height=300)
                 return fig
 
             df["Year"] = df["umd_tree_cover_loss__year"]
             df["Forest Loss (kha)"] = (df["umd_tree_cover_loss__ha"] / 1000).round(2)
-            df["Gross Emissions (MtCO2e)"] = (df["gfw_gross_emissions_co2e_all_gases__mg"] / 1_000_000).round(2)
-
-            df_long = df[["Year", "Forest Loss (kha)", "Gross Emissions (MtCO2e)"]].melt(
-                id_vars="Year", var_name="Metric", value_name="Value"
-            )
+            df["Driver"] = df["wri_google_tree_cover_loss_drivers__driver"]
 
             fig = px.bar(
-                df_long,
+                df,
                 x="Year",
-                y="Value",
-                color="Metric",
-                barmode="overlay",
-                color_discrete_map={
-                    "Forest Loss (kha)": "#228B22",
-                    "Gross Emissions (MtCO2e)": "#8B4513",
-                },
+                y="Forest Loss (kha)",
+                color="Driver",
+                barmode="stack",
                 opacity=0.8,
-                title=f"Forest Loss & Emissions in {COUNTRY_NAMES.get(sel_iso, sel_iso)}",
+                title=f"Forest Loss in {COUNTRY_NAMES.get(sel_iso, sel_iso)}",
                 template="plotly_dark",
                 height=300,
             )
             fig.update_layout(
                 autosize=True,
-                margin=dict(l=40, r=40, t=60, b=60),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(l=40, r=160, t=60, b=60),
+                legend=dict(
+                    orientation="v",
+                    x=1.02,
+                    y=1,
+                    xanchor="left",
+                    yanchor="top",
+                    font=dict(size=10),
+                    bgcolor="rgba(0,0,0,0)",
+                    title=dict(text="Driver", font=dict(size=11)),
+                ),
             )
             fig.update_xaxes(showticklabels=True, tickfont=dict(size=10))
             return fig
 
         except Exception as e:
-            fig = px.bar(
-                pd.DataFrame({"Year": [], "Value": [], "Metric": []}),
-                x="Year",
-                y="Value",
-                title=f"Error fetching data: {e}",
+            fig = px.bar(x=[], y=[], title=f"Error fetching data: {e}")
+            fig.update_layout(height=300)
+            return fig
+
+    @output
+    @render_widget
+    def driver_class_pie():
+        sel_iso = selected_iso()
+
+        try:
+            df = gfw_forest_loss()
+
+            if df.empty:
+                fig = px.pie(title="No data available.")
+                fig.update_layout(height=300)
+                return fig
+
+            df_class = (
+                df.groupby("large_driver_class", as_index=False)["umd_tree_cover_loss__ha"]
+                .sum()
+                .rename(columns={
+                    "large_driver_class":      "Driver class",
+                    "umd_tree_cover_loss__ha": "Tree cover loss (kha)",
+                })
             )
+            df_class["Tree cover loss (kha)"] = (df_class["Tree cover loss (kha)"] / 1000).round(2)
+
+            fig = px.pie(
+                df_class,
+                names="Driver class",
+                values="Tree cover loss (kha)",
+                color="Driver class",
+                color_discrete_map={
+                    "Deforestation": "#8B0000",
+                    "Temporary disturbances": "#DAA520",
+                },
+                title=f"Driver class share<br>{COUNTRY_NAMES.get(sel_iso, sel_iso)}",
+                template="plotly_dark",
+                hole=0.4,
+            )
+            fig.update_layout(
+                height=300,
+                margin=dict(l=20, r=20, t=60, b=80),
+                legend=dict(
+                    orientation="h",
+                    yanchor="top",
+                    y=-0.15,
+                    xanchor="center",
+                    x=0.5,
+                    font=dict(size=11),
+                    itemsizing="constant",
+                ),
+                showlegend=True,
+            )
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            return fig
+
+        except Exception as e:
+            fig = px.pie(title=f"Error: {e}")
             fig.update_layout(height=300)
             return fig
 
