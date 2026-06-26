@@ -1,7 +1,12 @@
 import ee
 
 from landcover_explorer.settings import Settings
-from landcover_explorer.knowledgebase.gee_tiles_preprocess import compute_forest_mask
+from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
+    compute_agriculture_mask,
+    compute_forest_loss_mask,
+    compute_modis_forest_mask,
+    compute_settlement_mask,
+)
 
 import asyncio
 import geopandas as gpd
@@ -20,7 +25,6 @@ from ipyleaflet import (
 )
 from ipywidgets import HTML
 from pathlib import Path
-from landcover_explorer.knowledgebase.land_cover_stats import calculate_coverage
 from shiny import App, ui, reactive
 from shinywidgets import output_widget, register_widget, render_widget
 
@@ -42,16 +46,6 @@ GFW_DATASET = settings.gfw_dataset
 GFW_VERSION = settings.gfw_dataset_version
 GFW_URL = str(settings.gfw_api_url)
 GFW_QUERY = f"{GFW_URL}/{GFW_DATASET}/{GFW_VERSION}/query"
-
-# IGBP_VIS = {
-#     "min": 0,
-#     "max": 16,
-#     "palette": [
-#         "1c0dff", "05450a", "086a10", "54a708", "78d203", "009900", "c6b044", "dcd159",
-#         "dade48", "fbff13", "b6ff05", "27ff87", "c24f44", "a5a5a5", "ff6d4c",
-#         "69fff8", "f9ffa4",
-#     ],
-# }
 
 # Can list more countries -> To be set up in a separate module
 COUNTRY_NAMES = {
@@ -94,6 +88,16 @@ app_ui = ui.page_sidebar(
             sep="",
         ),
         ui.input_dark_mode(mode="dark"),
+        ui.hr(),
+        ui.p("Map layers", style="font-weight:bold; margin-bottom:4px;"),
+        ui.HTML("""
+            <div style="display:flex; flex-direction:column; gap:4px; font-size:13px;">
+                <span><span style="display:inline-block;width:12px;height:12px;background:#228B22;border-radius:2px;margin-right:6px;"></span>Forest cover</span>
+                <span><span style="display:inline-block;width:12px;height:12px;background:#FFA500;border-radius:2px;margin-right:6px;"></span>Agriculture</span>
+                <span><span style="display:inline-block;width:12px;height:12px;background:#9B59B6;border-radius:2px;margin-right:6px;"></span>Settlement</span>
+                <span><span style="display:inline-block;width:12px;height:12px;background:#CC0000;border-radius:2px;margin-right:6px;"></span>Forest loss</span>
+            </div>
+        """),
     ),
     ui.card(
         output_widget("map"),
@@ -164,31 +168,6 @@ def server(input, output, session):
     def selected_year():
         return input.year()
 
-    # Fetch MODIS IGBP tile URL clipped to the selected country and year
-    # @reactive.calc
-    # def gee_igbp_tile_url():
-    #     iso = input.country()
-    #     year = input.year()
-
-    #     country_feature = next(
-    #         f for f in data["features"]
-    #         if f["properties"]["GID_0"] == iso
-    #     )
-    #     ee_geometry = ee.Geometry(country_feature["geometry"])
-
-    #     image = (
-    #         igbp_land_cover
-    #         .filter(ee.Filter.calendarRange(year, year, "year"))
-    #         .first()
-    #         .clip(ee_geometry)
-    #     )
-
-    #     map_id = image.getMapId(IGBP_VIS)
-    #     return map_id["tile_fetcher"].url_format
-
-    # Update tile layer and popup cache when country or year changes.
-    # Stage 1 (sequential): build forest mask — both downstream calls depend on it.
-    # Stage 2 (parallel): getMapId and calculate_coverage are independent GEE calls.
     @reactive.effect
     async def _():
         iso = selected_iso()
@@ -198,7 +177,7 @@ def server(input, output, session):
 
         country_name = COUNTRY_NAMES.get(iso, iso)
         notif_id = ui.notification_show(
-            f"Loading forest data for {country_name} ({year})…",
+            f"Loading map layers for {country_name} ({year})…",
             duration=None,
             type="message",
         )
@@ -209,57 +188,47 @@ def server(input, output, session):
         )
         ee_geometry = ee.Geometry(iso_feature["geometry"])
 
-        app_forest = await asyncio.to_thread(
-            compute_forest_mask, igbp_land_cover, ee_geometry, selected_year()
+        app_forest, app_agri, app_settlement, app_loss = await asyncio.gather(
+            asyncio.to_thread(compute_modis_forest_mask, igbp_land_cover, ee_geometry, year),
+            asyncio.to_thread(compute_agriculture_mask, igbp_land_cover, ee_geometry, year),
+            asyncio.to_thread(compute_settlement_mask, igbp_land_cover, ee_geometry, year),
+            asyncio.to_thread(compute_forest_loss_mask, ee_geometry, year),
         )
 
-        def get_tile_url():
+        def get_forest_tile_url():
             map_id = app_forest.getMapId({"min": 0, "max": 1, "palette": ["#228B22"]})
             return map_id["tile_fetcher"].url_format
 
-        def get_coverage():
-            return calculate_coverage(
-                iso=iso,
-                year=year,
-                country_geometry=ee_geometry,
-                category_mask=app_forest,
-            )
+        def get_agri_tile_url():
+            map_id = app_agri.getMapId({"min": 0, "max": 1, "palette": ["#FFA500"]})
+            return map_id["tile_fetcher"].url_format
 
-        tile_url, coverage = await asyncio.gather(
-            asyncio.to_thread(get_tile_url),
-            asyncio.to_thread(get_coverage),
+        def get_settlement_tile_url():
+            map_id = app_settlement.getMapId({"min": 0, "max": 1, "palette": ["#9B59B6"]})
+            return map_id["tile_fetcher"].url_format
+
+        def get_loss_tile_url():
+            map_id = app_loss.getMapId({"min": 0, "max": 1, "palette": ["#CC0000"]})
+            return map_id["tile_fetcher"].url_format
+
+        forest_tile_url, agri_tile_url, settlement_tile_url, loss_tile_url = await asyncio.gather(
+            asyncio.to_thread(get_forest_tile_url),
+            asyncio.to_thread(get_agri_tile_url),
+            asyncio.to_thread(get_settlement_tile_url),
+            asyncio.to_thread(get_loss_tile_url),
         )
 
         for layer in list(m.layers):
-            if layer.name.startswith("Forest_"):
+            if layer.name.startswith(("Forest_", "Agriculture_", "Settlement_", "Loss_")):
                 m.remove_layer(layer)
-        m.add_layer(
-            TileLayer(
-                url=tile_url,
-                name=f"Forest_{iso}_{year}",
-                opacity=0.5,
-            )
-        )
+        m.add_layer(TileLayer(url=loss_tile_url, name=f"Loss_{iso}_{year}", opacity=0.7))
+        m.add_layer(TileLayer(url=forest_tile_url, name=f"Forest_{iso}_{year}", opacity=0.5))
+        m.add_layer(TileLayer(url=agri_tile_url, name=f"Agriculture_{iso}_{year}", opacity=0.5))
+        m.add_layer(TileLayer(url=settlement_tile_url, name=f"Settlement_{iso}_{year}", opacity=0.6))
 
-        country_display = COUNTRY_NAMES.get(coverage["iso"], coverage["iso"])
-        _popup_cache["label"] = (
-            f"<b>{country_display}</b><br>Forest cover {coverage['year']}: {coverage['coverage_pct']}%"
-        )
+        _popup_cache["label"] = f"<b>{COUNTRY_NAMES.get(iso, iso)}</b>"
 
         ui.notification_remove(notif_id)
-
-    # # Update IGBP land cover layer when country or year changes
-    # @reactive.effect
-    # def _():
-    #     iso = input.country()
-    #     year = input.year()
-    #     url = gee_igbp_tile_url()
-
-    #     for layer in list(m.layers):
-    #         if layer.name.startswith("IGBP_"):
-    #             m.remove_layer(layer)
-
-    #     m.add_layer(TileLayer(url=url, name=f"IGBP_{iso}_{year}", opacity=0.7))
 
     # Update border and recenter when country changes
     @reactive.effect

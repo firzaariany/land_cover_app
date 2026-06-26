@@ -16,10 +16,13 @@ LOG_LEVEL = Literal[
 class Settings(BaseSettings):
     google_earth_service_account: str
     google_earth_key: Path
-    collection_id: str = "MODIS/061/MCD12C1"
-    collection_band_name: str = "Majority_Land_Cover_Type_1"
+    collection_id: str
+    collection_band_name: str
     forest_only: bool = True
-    forest_codes_in_collection: str = "1,2,3,4,5"
+    forest_codes_in_collection: str
+    agriculture_codes_in_collection: str 
+    settlements_codes_in_collection: str
+    hansen_dataset: str = "UMD/hansen/global_forest_change_2025_v1_13"
     gfw_api_key: str
     gfw_access_token: str
     gfw_dataset: str = "gadm__tcl__iso_change"
