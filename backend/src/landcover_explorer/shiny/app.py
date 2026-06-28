@@ -7,6 +7,7 @@ from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
     compute_modis_forest_mask,
     compute_settlement_mask,
 )
+from landcover_explorer.knowledgebase.land_cover_stats import calculate_coverage
 
 import asyncio
 import geopandas as gpd
@@ -25,7 +26,7 @@ from ipyleaflet import (
 )
 from ipywidgets import HTML
 from pathlib import Path
-from shiny import App, ui, reactive
+from shiny import App, ui, reactive, render
 from shinywidgets import output_widget, register_widget, render_widget
 
 # -----------------
@@ -90,14 +91,7 @@ app_ui = ui.page_sidebar(
         ui.input_dark_mode(mode="dark"),
         ui.hr(),
         ui.p("Map layers", style="font-weight:bold; margin-bottom:4px;"),
-        ui.HTML("""
-            <div style="display:flex; flex-direction:column; gap:4px; font-size:13px;">
-                <span><span style="display:inline-block;width:12px;height:12px;background:#228B22;border-radius:2px;margin-right:6px;"></span>Forest cover</span>
-                <span><span style="display:inline-block;width:12px;height:12px;background:#FFA500;border-radius:2px;margin-right:6px;"></span>Agriculture</span>
-                <span><span style="display:inline-block;width:12px;height:12px;background:#9B59B6;border-radius:2px;margin-right:6px;"></span>Settlement</span>
-                <span><span style="display:inline-block;width:12px;height:12px;background:#CC0000;border-radius:2px;margin-right:6px;"></span>Forest loss</span>
-            </div>
-        """),
+        ui.output_ui("map_legend"),
     ),
     ui.card(
         output_widget("map"),
@@ -168,6 +162,21 @@ def server(input, output, session):
     def selected_year():
         return input.year()
 
+    @output
+    @render.ui
+    def map_legend():
+        year = selected_year()
+        def swatch(color):
+            return f'<span style="display:inline-block;width:12px;height:12px;background:{color};border-radius:2px;margin-right:6px;"></span>'
+        return ui.HTML(f"""
+            <div style="display:flex; flex-direction:column; gap:4px; font-size:13px;">
+                <span>{swatch("#228B22")}Forest cover {year}</span>
+                <span>{swatch("#FFA500")}Agriculture</span>
+                <span>{swatch("#9B59B6")}Settlement</span>
+                <span>{swatch("#CC0000")}Forest loss 2000–{year}</span>
+            </div>
+        """)
+
     @reactive.effect
     async def _():
         iso = selected_iso()
@@ -211,11 +220,20 @@ def server(input, output, session):
             map_id = app_loss.getMapId({"min": 0, "max": 1, "palette": ["#CC0000"]})
             return map_id["tile_fetcher"].url_format
 
-        forest_tile_url, agri_tile_url, settlement_tile_url, loss_tile_url = await asyncio.gather(
+        def get_coverage():
+            return calculate_coverage(
+                iso=iso,
+                year=year,
+                country_geometry=ee_geometry,
+                category_mask=app_forest,
+            )
+
+        forest_tile_url, agri_tile_url, settlement_tile_url, loss_tile_url, coverage = await asyncio.gather(
             asyncio.to_thread(get_forest_tile_url),
             asyncio.to_thread(get_agri_tile_url),
             asyncio.to_thread(get_settlement_tile_url),
             asyncio.to_thread(get_loss_tile_url),
+            asyncio.to_thread(get_coverage),
         )
 
         for layer in list(m.layers):
@@ -226,7 +244,10 @@ def server(input, output, session):
         m.add_layer(TileLayer(url=agri_tile_url, name=f"Agriculture_{iso}_{year}", opacity=0.5))
         m.add_layer(TileLayer(url=settlement_tile_url, name=f"Settlement_{iso}_{year}", opacity=0.6))
 
-        _popup_cache["label"] = f"<b>{COUNTRY_NAMES.get(iso, iso)}</b>"
+        _popup_cache["label"] = (
+            f"<b>{COUNTRY_NAMES.get(iso, iso)}</b><br>"
+            f"Forest cover {year}: {coverage['coverage_pct']}%"
+        )
 
         ui.notification_remove(notif_id)
 

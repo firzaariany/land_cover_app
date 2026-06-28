@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     google_earth_key: Path
     collection_id: str
     collection_band_name: str
+    collection_resolution: int
     forest_only: bool = True
     forest_codes_in_collection: str
     agriculture_codes_in_collection: str 

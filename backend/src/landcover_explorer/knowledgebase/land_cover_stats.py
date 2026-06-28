@@ -5,6 +5,12 @@ Called from app.py — EE must already be initialised.
 
 import ee
 
+from landcover_explorer.settings import Settings
+
+settings = Settings()
+
+REDUCTION_SCALE = settings.collection_resolution
+
 # Land area per country is constant across years — cache to avoid recomputing.
 _land_area_cache: dict[str, float] = {}
 
@@ -42,7 +48,7 @@ def calculate_coverage(
             .reduceRegion(
                 reducer=ee.Reducer.sum(),
                 geometry=country_geometry,
-                scale=5000,
+                scale=REDUCTION_SCALE,
                 maxPixels=1e9,
             )
             .get("remapped")
@@ -59,7 +65,7 @@ def calculate_coverage(
         result = combined.reduceRegion(
             reducer=ee.Reducer.sum(),
             geometry=country_geometry,
-            scale=5000,          # MCD12C1 native resolution ~5 km
+            scale=REDUCTION_SCALE,
             maxPixels=1e9,
         ).getInfo()
         category_area_m2 = result["category_area"]
