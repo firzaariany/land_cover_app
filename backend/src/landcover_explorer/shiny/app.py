@@ -5,7 +5,7 @@ from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
     compute_agriculture_mask,
     compute_forest_loss_mask,
     compute_modis_forest_mask,
-    compute_settlement_mask,
+    compute_state_forest_loss_in_settlements,
 )
 from landcover_explorer.knowledgebase.land_cover_stats import calculate_coverage
 
@@ -23,6 +23,8 @@ from ipyleaflet import (
     LayersControl,
     GeoJSON,
     Popup,
+    CircleMarker,
+    LayerGroup,
 )
 from ipywidgets import HTML
 from pathlib import Path
@@ -47,6 +49,8 @@ GFW_DATASET = settings.gfw_dataset
 GFW_VERSION = settings.gfw_dataset_version
 GFW_URL = str(settings.gfw_api_url)
 GFW_QUERY = f"{GFW_URL}/{GFW_DATASET}/{GFW_VERSION}/query"
+
+_layer_cache: dict = {}
 
 # Can list more countries -> To be set up in a separate module
 COUNTRY_NAMES = {
@@ -112,6 +116,7 @@ app_ui = ui.page_sidebar(
             fillable=True,
         ),
         col_widths=[8, 4],
+        gap="0.5rem",
     ),
     title="Explore Forest",
     fillable=True,
@@ -172,7 +177,7 @@ def server(input, output, session):
             <div style="display:flex; flex-direction:column; gap:4px; font-size:13px;">
                 <span>{swatch("#228B22")}Forest cover {year}</span>
                 <span>{swatch("#FFA500")}Agriculture</span>
-                <span>{swatch("#9B59B6")}Settlement</span>
+                <span>{swatch("#9B59B6")}Forest loss in settlements 2001–{year}</span>
                 <span>{swatch("#CC0000")}Forest loss 2000–{year}</span>
             </div>
         """)
@@ -192,48 +197,76 @@ def server(input, output, session):
         )
         await asyncio.sleep(0)
 
-        iso_feature = next(
-            f for f in data["features"] if f["properties"]["GID_0"] == iso
-        )
-        ee_geometry = ee.Geometry(iso_feature["geometry"])
+        cache_key = (iso, year)
+        if cache_key not in _layer_cache:
+            iso_feature = next(
+                f for f in data["features"] if f["properties"]["GID_0"] == iso
+            )
+            ee_geometry = ee.Geometry(iso_feature["geometry"])
 
-        app_forest, app_agri, app_settlement, app_loss = await asyncio.gather(
-            asyncio.to_thread(compute_modis_forest_mask, igbp_land_cover, ee_geometry, year),
-            asyncio.to_thread(compute_agriculture_mask, igbp_land_cover, ee_geometry, year),
-            asyncio.to_thread(compute_settlement_mask, igbp_land_cover, ee_geometry, year),
-            asyncio.to_thread(compute_forest_loss_mask, ee_geometry, year),
-        )
-
-        def get_forest_tile_url():
-            map_id = app_forest.getMapId({"min": 0, "max": 1, "palette": ["#228B22"]})
-            return map_id["tile_fetcher"].url_format
-
-        def get_agri_tile_url():
-            map_id = app_agri.getMapId({"min": 0, "max": 1, "palette": ["#FFA500"]})
-            return map_id["tile_fetcher"].url_format
-
-        def get_settlement_tile_url():
-            map_id = app_settlement.getMapId({"min": 0, "max": 1, "palette": ["#9B59B6"]})
-            return map_id["tile_fetcher"].url_format
-
-        def get_loss_tile_url():
-            map_id = app_loss.getMapId({"min": 0, "max": 1, "palette": ["#CC0000"]})
-            return map_id["tile_fetcher"].url_format
-
-        def get_coverage():
-            return calculate_coverage(
-                iso=iso,
-                year=year,
-                country_geometry=ee_geometry,
-                category_mask=app_forest,
+            app_forest, app_agri, (app_settlement_loss, settlement_loss_centroids), app_loss = await asyncio.gather(
+                asyncio.to_thread(compute_modis_forest_mask, igbp_land_cover, ee_geometry, year),
+                asyncio.to_thread(compute_agriculture_mask, igbp_land_cover, ee_geometry, year),
+                asyncio.to_thread(compute_state_forest_loss_in_settlements, igbp_land_cover, ee_geometry, year, country_name),
+                asyncio.to_thread(compute_forest_loss_mask, ee_geometry, year),
             )
 
-        forest_tile_url, agri_tile_url, settlement_tile_url, loss_tile_url, coverage = await asyncio.gather(
-            asyncio.to_thread(get_forest_tile_url),
-            asyncio.to_thread(get_agri_tile_url),
-            asyncio.to_thread(get_settlement_tile_url),
-            asyncio.to_thread(get_loss_tile_url),
-            asyncio.to_thread(get_coverage),
+            def get_forest_tile_url():
+                map_id = app_forest.getMapId({"min": 0, "max": 1, "palette": ["#228B22"]})
+                return map_id["tile_fetcher"].url_format
+
+            def get_agri_tile_url():
+                map_id = app_agri.getMapId({"min": 0, "max": 1, "palette": ["#FFA500"]})
+                return map_id["tile_fetcher"].url_format
+
+            def get_loss_tile_url():
+                map_id = app_loss.getMapId({"min": 0, "max": 1, "palette": ["#CC0000"]})
+                return map_id["tile_fetcher"].url_format
+
+            def get_coverage():
+                return calculate_coverage(
+                    iso=iso,
+                    year=year,
+                    country_geometry=ee_geometry,
+                    category_mask=app_forest,
+                )
+
+            forest_tile_url, agri_tile_url, loss_tile_url, coverage = await asyncio.gather(
+                asyncio.to_thread(get_forest_tile_url),
+                asyncio.to_thread(get_agri_tile_url),
+                asyncio.to_thread(get_loss_tile_url),
+                asyncio.to_thread(get_coverage),
+            )
+
+            _layer_cache[cache_key] = {
+                "forest_tile_url": forest_tile_url,
+                "agri_tile_url": agri_tile_url,
+                "loss_tile_url": loss_tile_url,
+                "coverage": coverage,
+                "settlement_loss_centroids": settlement_loss_centroids,
+            }
+
+        forest_tile_url = _layer_cache[cache_key]["forest_tile_url"]
+        agri_tile_url = _layer_cache[cache_key]["agri_tile_url"]
+        loss_tile_url = _layer_cache[cache_key]["loss_tile_url"]
+        coverage = _layer_cache[cache_key]["coverage"]
+        settlement_loss_centroids = _layer_cache[cache_key]["settlement_loss_centroids"]
+
+        max_settlement_area = max((pt["loss_area_m2"] for pt in settlement_loss_centroids), default=1)
+        settlement_markers = LayerGroup(
+            layers=[
+                CircleMarker(
+                    location=[pt["lat"], pt["lon"]],
+                    radius=max(3, int(math.sqrt(pt["loss_area_m2"] / max_settlement_area) * 25)),
+                    color="#9B59B6",
+                    fill_color="#9B59B6",
+                    fill_opacity=0.7,
+                    weight=1,
+                    tooltip=f'{pt["name"]}: {pt["loss_area_m2"] / 1e6:.1f} km²',
+                )
+                for pt in settlement_loss_centroids
+            ],
+            name=f"Settlement_{iso}_{year}",
         )
 
         for layer in list(m.layers):
@@ -242,7 +275,7 @@ def server(input, output, session):
         m.add_layer(TileLayer(url=loss_tile_url, name=f"Loss_{iso}_{year}", opacity=0.7))
         m.add_layer(TileLayer(url=forest_tile_url, name=f"Forest_{iso}_{year}", opacity=0.5))
         m.add_layer(TileLayer(url=agri_tile_url, name=f"Agriculture_{iso}_{year}", opacity=0.5))
-        m.add_layer(TileLayer(url=settlement_tile_url, name=f"Settlement_{iso}_{year}", opacity=0.6))
+        m.add_layer(settlement_markers)
 
         _popup_cache["label"] = (
             f"<b>{COUNTRY_NAMES.get(iso, iso)}</b><br>"
