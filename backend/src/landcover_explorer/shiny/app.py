@@ -7,6 +7,7 @@ from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
     compute_modis_forest_mask,
     compute_state_forest_loss_in_settlements,
 )
+from landcover_explorer.knowledgebase.gfw_preprocess import fetch_forest_loss_by_driver
 from landcover_explorer.knowledgebase.land_cover_stats import calculate_coverage
 
 import asyncio
@@ -14,9 +15,7 @@ import geopandas as gpd
 import json
 import math
 import os
-import pandas as pd
 import plotly.express as px
-import requests
 from ipyleaflet import (
     Map,
     TileLayer,
@@ -44,11 +43,6 @@ ee.Initialize(credentials)
 # MODIS land cover
 dataset = ee.ImageCollection(settings.collection_id)
 igbp_land_cover = dataset.select(settings.collection_band_name)
-
-GFW_DATASET = settings.gfw_dataset
-GFW_VERSION = settings.gfw_dataset_version
-GFW_URL = str(settings.gfw_api_url)
-GFW_QUERY = f"{GFW_URL}/{GFW_DATASET}/{GFW_VERSION}/query"
 
 _layer_cache: dict = {}
 
@@ -159,6 +153,8 @@ def server(input, output, session):
 
     border_layer.on_click(on_click)  # register once
 
+    _settlement_group: reactive.Value = reactive.value(None)
+
     @reactive.calc
     def selected_iso():
         return input.country()
@@ -172,15 +168,21 @@ def server(input, output, session):
     def map_legend():
         year = selected_year()
         def swatch(color):
-            return f'<span style="display:inline-block;width:12px;height:12px;background:{color};border-radius:2px;margin-right:6px;"></span>'
-        return ui.HTML(f"""
-            <div style="display:flex; flex-direction:column; gap:4px; font-size:13px;">
-                <span>{swatch("#228B22")}Forest cover {year}</span>
-                <span>{swatch("#FFA500")}Agriculture</span>
-                <span>{swatch("#9B59B6")}Forest loss in settlements 2001–{year}</span>
-                <span>{swatch("#CC0000")}Forest loss 2000–{year}</span>
-            </div>
-        """)
+            return (
+                f'<span style="display:inline-block;width:12px;height:12px;'
+                f'background:{color};border-radius:2px;margin-right:6px;vertical-align:middle;"></span>'
+            )
+        return ui.input_checkbox_group(
+            "visible_layers",
+            None,
+            choices={
+                "forest":      ui.HTML(f'{swatch("#228B22")} Forest cover {year}'),
+                "agriculture": ui.HTML(f'{swatch("#FFA500")} Agriculture'),
+                "settlements": ui.HTML(f'{swatch("#9B59B6")} Forest loss in settlements 2001–{year}'),
+                "loss":        ui.HTML(f'{swatch("#CC0000")} Forest loss 2000–{year}'),
+            },
+            selected=["forest", "loss"],
+        )
 
     @reactive.effect
     async def _():
@@ -269,13 +271,14 @@ def server(input, output, session):
             name=f"Settlement_{iso}_{year}",
         )
 
+        _settlement_group.set(settlement_markers)
+
         for layer in list(m.layers):
             if layer.name.startswith(("Forest_", "Agriculture_", "Settlement_", "Loss_")):
                 m.remove_layer(layer)
-        m.add_layer(TileLayer(url=loss_tile_url, name=f"Loss_{iso}_{year}", opacity=0.7))
-        m.add_layer(TileLayer(url=forest_tile_url, name=f"Forest_{iso}_{year}", opacity=0.5))
-        m.add_layer(TileLayer(url=agri_tile_url, name=f"Agriculture_{iso}_{year}", opacity=0.5))
-        m.add_layer(settlement_markers)
+        m.add_layer(TileLayer(url=loss_tile_url, name=f"Loss_{iso}_{year}", opacity=0))
+        m.add_layer(TileLayer(url=forest_tile_url, name=f"Forest_{iso}_{year}", opacity=0))
+        m.add_layer(TileLayer(url=agri_tile_url, name=f"Agriculture_{iso}_{year}", opacity=0))
 
         _popup_cache["label"] = (
             f"<b>{COUNTRY_NAMES.get(iso, iso)}</b><br>"
@@ -283,6 +286,32 @@ def server(input, output, session):
         )
 
         ui.notification_remove(notif_id)
+
+    @reactive.effect
+    def _():
+        try:
+            visible = set(input.visible_layers())
+        except Exception:
+            return
+
+        opacity_map = {
+            "Forest_":      ("forest",      0.5),
+            "Agriculture_": ("agriculture", 0.5),
+            "Loss_":        ("loss",        0.7),
+        }
+        for layer in m.layers:
+            name = getattr(layer, "name", "") or ""
+            for prefix, (key, target_opacity) in opacity_map.items():
+                if name.startswith(prefix):
+                    layer.opacity = target_opacity if key in visible else 0
+
+        grp = _settlement_group()
+        if grp is not None:
+            if "settlements" in visible:
+                if grp not in m.layers:
+                    m.add_layer(grp)
+            elif grp in m.layers:
+                m.remove_layer(grp)
 
     # Update border and recenter when country changes
     @reactive.effect
@@ -310,50 +339,7 @@ def server(input, output, session):
 
     @reactive.calc
     def gfw_forest_loss():
-        sel_iso = selected_iso()
-
-        headers = {
-            "Authorization": f"Bearer {settings.gfw_access_token}",
-            "x-api-key": settings.gfw_api_key,
-        }
-
-        sql = f"""
-        SELECT
-            wri_google_tree_cover_loss_drivers__driver,
-            umd_tree_cover_loss__year,
-            SUM(umd_tree_cover_loss__ha) AS umd_tree_cover_loss__ha,
-            SUM("gfw_gross_emissions_co2e_all_gases__Mg") AS gfw_gross_emissions_co2e_all_gases__Mg
-        FROM data
-        WHERE iso = '{sel_iso}'
-            AND umd_tree_cover_density_2000__threshold = 30
-            AND wri_google_tree_cover_loss_drivers__driver IS NOT NULL
-        GROUP BY 
-            wri_google_tree_cover_loss_drivers__driver,
-            umd_tree_cover_loss__year
-        """
-
-        response = requests.get(GFW_QUERY, headers=headers, params={"sql": sql})
-
-        if not response.ok:
-            raise RuntimeError(
-                f"GFW API error {response.status_code} for {sel_iso}: {response.text[:200]}"
-            )
-
-        # Group sub-class of tree loss drivers into larger classes
-        df = pd.DataFrame(response.json()["data"])
-
-        driver_class_map = {
-            "Hard commodities":             "Deforestation",
-            "Permanent agriculture":        "Deforestation",
-            "Settlements & Infrastructure": "Deforestation",
-            "Logging":                      "Temporary disturbances",
-            "Other natural disturbances":   "Temporary disturbances",
-            "Wildfire":                     "Temporary disturbances",
-            "Shifting cultivation":         "Temporary disturbances",
-        }
-        df["large_driver_class"] = df["wri_google_tree_cover_loss_drivers__driver"].map(driver_class_map)
-
-        return df
+        return fetch_forest_loss_by_driver(selected_iso())
 
     @output
     @render_widget
