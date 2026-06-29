@@ -126,3 +126,24 @@ def compute_state_forest_loss_in_settlements(
     loss_in_settlement_centroid = extract_admin1_loss_centroids(loss_in_settlement_by_state)
 
     return loss_fraction, loss_in_settlement_centroid
+
+
+def compute_state_forest_loss_in_agriculture(
+    land_cover_dataset, geometry, select_year, select_country
+):
+    """MODIS pixels (forest 2001 → settlement select_year) confirmed by Hansen loss.
+
+    Returns
+    -------
+    mask : ee.Image
+        Binary MODIS mask of converted pixels where loss_fraction > loss_threshold.
+    points : list[dict]
+        200 randomly sampled loss points as {lat, lon, loss_fraction}.
+    """
+    is_agriculture = _compute_mask(land_cover_dataset, geometry, select_year, AGRICULTURE_CODES)
+    loss_fraction = _compute_loss_fraction(is_agriculture, select_year, geometry=geometry)
+
+    loss_in_agriculture_by_state = aggregate_forest_loss_area_by_admin1(select_country, loss_fraction)
+    loss_in_agriculture_centroid = extract_admin1_loss_centroids(loss_in_agriculture_by_state)
+
+    return loss_fraction, loss_in_agriculture_centroid

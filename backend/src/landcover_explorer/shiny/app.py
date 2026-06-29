@@ -5,6 +5,7 @@ from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
     compute_agriculture_mask,
     compute_forest_loss_mask,
     compute_modis_forest_mask,
+    compute_state_forest_loss_in_agriculture,
     compute_state_forest_loss_in_settlements,
 )
 from landcover_explorer.knowledgebase.gfw_preprocess import fetch_forest_loss_by_driver
@@ -27,7 +28,7 @@ from ipyleaflet import (
 )
 from ipywidgets import HTML
 from pathlib import Path
-from shiny import App, ui, reactive, render
+from shiny import App, ui, reactive
 from shinywidgets import output_widget, register_widget, render_widget
 
 # -----------------
@@ -54,6 +55,23 @@ COUNTRY_NAMES = {
     "NZL": "New Zealand",
     "IDN": "Indonesia",
 }
+
+
+def _swatch(color: str) -> str:
+    return (
+        f'<span style="display:inline-block;width:12px;height:12px;'
+        f'background:{color};border-radius:2px;margin-right:6px;vertical-align:middle;"></span>'
+    )
+
+
+def _legend_choices(year: int) -> dict:
+    return {
+        "forest":           ui.HTML(f'{_swatch("#228B22")} Forest cover {year}'),
+        "agriculture":      ui.HTML(f'{_swatch("#FFA500")} Agriculture'),
+        "agriculture_loss": ui.HTML(f'{_swatch("#E67E22")} Forest loss in agriculture 2001–{year}'),
+        "settlements":      ui.HTML(f'{_swatch("#9B59B6")} Forest loss in settlements 2001–{year}'),
+        "loss":             ui.HTML(f'{_swatch("#CC0000")} Forest loss 2000–{year}'),
+    }
 
 # -----------------
 # DATA PREPARATION
@@ -89,7 +107,12 @@ app_ui = ui.page_sidebar(
         ui.input_dark_mode(mode="dark"),
         ui.hr(),
         ui.p("Map layers", style="font-weight:bold; margin-bottom:4px;"),
-        ui.output_ui("map_legend"),
+        ui.input_checkbox_group(
+            "visible_layers",
+            None,
+            choices=_legend_choices(2005),
+            selected=["forest", "loss"],
+        ),
     ),
     ui.card(
         output_widget("map"),
@@ -154,6 +177,7 @@ def server(input, output, session):
     border_layer.on_click(on_click)  # register once
 
     _settlement_group: reactive.Value = reactive.value(None)
+    _agriculture_group: reactive.Value = reactive.value(None)
 
     @reactive.calc
     def selected_iso():
@@ -163,25 +187,12 @@ def server(input, output, session):
     def selected_year():
         return input.year()
 
-    @output
-    @render.ui
-    def map_legend():
-        year = selected_year()
-        def swatch(color):
-            return (
-                f'<span style="display:inline-block;width:12px;height:12px;'
-                f'background:{color};border-radius:2px;margin-right:6px;vertical-align:middle;"></span>'
-            )
-        return ui.input_checkbox_group(
+    @reactive.effect
+    def _():
+        ui.update_checkbox_group(
             "visible_layers",
-            None,
-            choices={
-                "forest":      ui.HTML(f'{swatch("#228B22")} Forest cover {year}'),
-                "agriculture": ui.HTML(f'{swatch("#FFA500")} Agriculture'),
-                "settlements": ui.HTML(f'{swatch("#9B59B6")} Forest loss in settlements 2001–{year}'),
-                "loss":        ui.HTML(f'{swatch("#CC0000")} Forest loss 2000–{year}'),
-            },
-            selected=["forest", "loss"],
+            choices=_legend_choices(selected_year()),
+            selected=input.visible_layers(),
         )
 
     @reactive.effect
@@ -206,11 +217,12 @@ def server(input, output, session):
             )
             ee_geometry = ee.Geometry(iso_feature["geometry"])
 
-            app_forest, app_agri, (app_settlement_loss, settlement_loss_centroids), app_loss = await asyncio.gather(
+            app_forest, app_agri, (_, settlement_loss_centroids), app_loss, (__, agriculture_loss_centroids) = await asyncio.gather(
                 asyncio.to_thread(compute_modis_forest_mask, igbp_land_cover, ee_geometry, year),
                 asyncio.to_thread(compute_agriculture_mask, igbp_land_cover, ee_geometry, year),
                 asyncio.to_thread(compute_state_forest_loss_in_settlements, igbp_land_cover, ee_geometry, year, country_name),
                 asyncio.to_thread(compute_forest_loss_mask, ee_geometry, year),
+                asyncio.to_thread(compute_state_forest_loss_in_agriculture, igbp_land_cover, ee_geometry, year, country_name),
             )
 
             def get_forest_tile_url():
@@ -246,6 +258,7 @@ def server(input, output, session):
                 "loss_tile_url": loss_tile_url,
                 "coverage": coverage,
                 "settlement_loss_centroids": settlement_loss_centroids,
+                "agriculture_loss_centroids": agriculture_loss_centroids,
             }
 
         forest_tile_url = _layer_cache[cache_key]["forest_tile_url"]
@@ -253,6 +266,7 @@ def server(input, output, session):
         loss_tile_url = _layer_cache[cache_key]["loss_tile_url"]
         coverage = _layer_cache[cache_key]["coverage"]
         settlement_loss_centroids = _layer_cache[cache_key]["settlement_loss_centroids"]
+        agriculture_loss_centroids = _layer_cache[cache_key]["agriculture_loss_centroids"]
 
         max_settlement_area = max((pt["loss_area_m2"] for pt in settlement_loss_centroids), default=1)
         settlement_markers = LayerGroup(
@@ -273,8 +287,26 @@ def server(input, output, session):
 
         _settlement_group.set(settlement_markers)
 
+        max_agriculture_area = max((pt["loss_area_m2"] for pt in agriculture_loss_centroids), default=1)
+        agriculture_loss_markers = LayerGroup(
+            layers=[
+                CircleMarker(
+                    location=[pt["lat"], pt["lon"]],
+                    radius=max(3, int(math.sqrt(pt["loss_area_m2"] / max_agriculture_area) * 25)),
+                    color="#E67E22",
+                    fill_color="#E67E22",
+                    fill_opacity=0.7,
+                    weight=1,
+                    tooltip=f'{pt["name"]}: {pt["loss_area_m2"] / 1e6:.1f} km²',
+                )
+                for pt in agriculture_loss_centroids
+            ],
+            name=f"AgriLoss_{iso}_{year}",
+        )
+        _agriculture_group.set(agriculture_loss_markers)
+
         for layer in list(m.layers):
-            if layer.name.startswith(("Forest_", "Agriculture_", "Settlement_", "Loss_")):
+            if layer.name.startswith(("Forest_", "Agriculture_", "AgriLoss_", "Settlement_", "Loss_")):
                 m.remove_layer(layer)
         m.add_layer(TileLayer(url=loss_tile_url, name=f"Loss_{iso}_{year}", opacity=0))
         m.add_layer(TileLayer(url=forest_tile_url, name=f"Forest_{iso}_{year}", opacity=0))
@@ -305,13 +337,17 @@ def server(input, output, session):
                 if name.startswith(prefix):
                     layer.opacity = target_opacity if key in visible else 0
 
-        grp = _settlement_group()
-        if grp is not None:
-            if "settlements" in visible:
-                if grp not in m.layers:
-                    m.add_layer(grp)
-            elif grp in m.layers:
+        # Remove all marker groups first so they can be re-added in a fixed
+        # z-order: settlements below, agriculture_loss on top.
+        _marker_groups = (("settlements", _settlement_group), ("agriculture_loss", _agriculture_group))
+        for _, group_val in _marker_groups:
+            grp = group_val()
+            if grp is not None and grp in m.layers:
                 m.remove_layer(grp)
+        for key, group_val in _marker_groups:
+            grp = group_val()
+            if grp is not None and key in visible:
+                m.add_layer(grp)
 
     # Update border and recenter when country changes
     @reactive.effect
