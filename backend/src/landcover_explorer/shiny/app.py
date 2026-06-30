@@ -10,6 +10,10 @@ from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
 )
 from landcover_explorer.knowledgebase.gfw_preprocess import fetch_forest_loss_by_driver
 from landcover_explorer.knowledgebase.land_cover_stats import calculate_coverage
+from landcover_explorer.knowledgebase.biomass_stats import (
+    compute_agb_loss_time_series,
+    compute_cumulative_agb_loss,
+)
 
 import asyncio
 import geopandas as gpd
@@ -127,12 +131,18 @@ app_ui = ui.page_sidebar(
             fillable=True,
         ),
         ui.card(
-            output_widget("driver_class_pie"),
-            title="Loss by driver class",
+            ui.input_select(
+                "agb_view",
+                None,
+                {"yearly": "Yearly", "cumulative": "Cumulative"},
+                selected="yearly",
+            ),
+            output_widget("agb_loss_plot"),
+            title="Aboveground biomass loss by driver",
             height="400px",
             fillable=True,
         ),
-        col_widths=[8, 4],
+        col_widths=[6, 6],
         gap="0.5rem",
     ),
     title="Explore Forest",
@@ -178,6 +188,7 @@ def server(input, output, session):
 
     _settlement_group: reactive.Value = reactive.value(None)
     _agriculture_group: reactive.Value = reactive.value(None)
+    _agb_loss_series: reactive.Value = reactive.value(None)
 
     @reactive.calc
     def selected_iso():
@@ -377,6 +388,23 @@ def server(input, output, session):
     def gfw_forest_loss():
         return fetch_forest_loss_by_driver(selected_iso())
 
+    # Runs only when the country changes (not the year) — compute_agb_loss_time_series
+    # caches per iso internally, but depending only on selected_iso() here also avoids
+    # the redundant call (and its cache lookup) on every year change.
+    @reactive.effect
+    async def _():
+        iso = selected_iso()
+        iso_feature = next(
+            f for f in data["features"] if f["properties"]["GID_0"] == iso
+        )
+        ee_geometry = ee.Geometry(iso_feature["geometry"])
+
+        _agb_loss_series.set(None)  # signal "loading" to agb_loss_plot
+        df = await asyncio.to_thread(
+            compute_agb_loss_time_series, iso, igbp_land_cover, ee_geometry
+        )
+        _agb_loss_series.set(df)
+
     @output
     @render_widget
     def forest_area_plot():
@@ -429,59 +457,69 @@ def server(input, output, session):
 
     @output
     @render_widget
-    def driver_class_pie():
+    def agb_loss_plot():
         sel_iso = selected_iso()
 
         try:
-            df = gfw_forest_loss()
+            df = _agb_loss_series()
 
-            if df.empty:
-                fig = px.pie(title="No data available.")
+            if df is None:
+                fig = px.bar(x=[], y=[], title="Loading…")
                 fig.update_layout(height=300)
                 return fig
 
-            df_class = (
-                df.groupby("large_driver_class", as_index=False)["umd_tree_cover_loss__ha"]
-                .sum()
-                .rename(columns={
-                    "large_driver_class":      "Driver class",
-                    "umd_tree_cover_loss__ha": "Tree cover loss (kha)",
-                })
-            )
-            df_class["Tree cover loss (kha)"] = (df_class["Tree cover loss (kha)"] / 1000).round(2)
+            if df.empty:
+                fig = px.bar(x=[], y=[], title="No data available.")
+                fig.update_layout(height=300)
+                return fig
 
-            fig = px.pie(
-                df_class,
-                names="Driver class",
-                values="Tree cover loss (kha)",
-                color="Driver class",
-                color_discrete_map={
-                    "Deforestation": "#8B0000",
-                    "Temporary disturbances": "#DAA520",
-                },
-                title=f"Driver class share<br>{COUNTRY_NAMES.get(sel_iso, sel_iso)}",
+            cumulative = input.agb_view() == "cumulative"
+            if cumulative:
+                df = compute_cumulative_agb_loss(sel_iso, df)
+
+            df_long = df.melt(
+                id_vars="year",
+                value_vars=["agriculture_agb_Mt", "settlement_agb_Mt"],
+                var_name="Driver",
+                value_name="AGB Loss (Mt)",
+            )
+            df_long["Driver"] = df_long["Driver"].map({
+                "agriculture_agb_Mt": "Agriculture",
+                "settlement_agb_Mt": "Settlements",
+            })
+
+            title_prefix = "Cumulative " if cumulative else ""
+            fig = px.bar(
+                df_long,
+                x="year",
+                y="AGB Loss (Mt)",
+                color="Driver",
+                barmode="stack",
+                opacity=0.8,
+                title=f"{title_prefix}Aboveground Biomass Loss by Driver in {COUNTRY_NAMES.get(sel_iso, sel_iso)}",
+                color_discrete_map={"Agriculture": "#FFA500", "Settlements": "#9B59B6"},
                 template="plotly_dark",
-                hole=0.4,
+                height=300,
             )
             fig.update_layout(
-                height=300,
-                margin=dict(l=20, r=20, t=60, b=80),
+                autosize=True,
+                margin=dict(l=40, r=160, t=60, b=60),
                 legend=dict(
-                    orientation="h",
+                    orientation="v",
+                    x=1.02,
+                    y=1,
+                    xanchor="left",
                     yanchor="top",
-                    y=-0.15,
-                    xanchor="center",
-                    x=0.5,
-                    font=dict(size=11),
-                    itemsizing="constant",
+                    font=dict(size=10),
+                    bgcolor="rgba(0,0,0,0)",
+                    title=dict(text="Driver", font=dict(size=11)),
                 ),
-                showlegend=True,
             )
-            fig.update_traces(textposition="inside", textinfo="percent+label")
+            fig.update_xaxes(showticklabels=True, tickfont=dict(size=10))
             return fig
 
         except Exception as e:
-            fig = px.pie(title=f"Error: {e}")
+            fig = px.bar(x=[], y=[], title=f"Error fetching data: {e}")
             fig.update_layout(height=300)
             return fig
 

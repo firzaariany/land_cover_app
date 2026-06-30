@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     agriculture_codes_in_collection: str 
     settlements_codes_in_collection: str
     hansen_dataset: str = "UMD/hansen/global_forest_change_2025_v1_13"
+    biomass_collection_id: str = "ESA/CCI/Above_Ground_Biomass/V6_0"
+    biomass_collection_band_name: str = "agb"
     gfw_api_key: str
     gfw_access_token: str
     gfw_dataset: str = "gadm__tcl__iso_change"
