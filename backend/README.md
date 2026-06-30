@@ -14,9 +14,6 @@ You will need the following installed:
     scripts/install
     ```
 
-
-
-
 2. Install dependencies
 ```
 conda env create -f environment.yml
