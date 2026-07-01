@@ -2,7 +2,6 @@ import ee
 
 from landcover_explorer.settings import Settings
 from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
-    compute_agriculture_mask,
     compute_forest_loss_mask,
     compute_modis_forest_mask,
     compute_state_forest_loss_in_agriculture,
@@ -14,12 +13,19 @@ from landcover_explorer.knowledgebase.biomass_stats import (
     compute_agb_loss_time_series,
     compute_cumulative_agb_loss,
 )
+from landcover_explorer.shiny.app_helpers import (
+    build_loss_markers,
+    error_fig,
+    get_ee_geometry,
+    get_iso_feature,
+    legend_choices,
+    style_bar_fig,
+)
 
 import asyncio
 import geopandas as gpd
 import json
 import math
-import os
 import plotly.express as px
 from ipyleaflet import (
     Map,
@@ -27,8 +33,6 @@ from ipyleaflet import (
     LayersControl,
     GeoJSON,
     Popup,
-    CircleMarker,
-    LayerGroup,
 )
 from ipywidgets import HTML
 from pathlib import Path
@@ -38,6 +42,7 @@ from shinywidgets import output_widget, register_widget, render_widget
 # -----------------
 # GEE INITIALISATION
 # -----------------
+
 settings = Settings()
 
 credentials = ee.ServiceAccountCredentials(
@@ -59,23 +64,6 @@ COUNTRY_NAMES = {
     "NZL": "New Zealand",
     "IDN": "Indonesia",
 }
-
-
-def _swatch(color: str) -> str:
-    return (
-        f'<span style="display:inline-block;width:12px;height:12px;'
-        f'background:{color};border-radius:2px;margin-right:6px;vertical-align:middle;"></span>'
-    )
-
-
-def _legend_choices(year: int) -> dict:
-    return {
-        "forest":           ui.HTML(f'{_swatch("#228B22")} Forest cover {year}'),
-        "agriculture":      ui.HTML(f'{_swatch("#FFA500")} Agriculture'),
-        "agriculture_loss": ui.HTML(f'{_swatch("#E67E22")} Forest loss in agriculture 2001–{year}'),
-        "settlements":      ui.HTML(f'{_swatch("#9B59B6")} Forest loss in settlements 2001–{year}'),
-        "loss":             ui.HTML(f'{_swatch("#CC0000")} Forest loss 2000–{year}'),
-    }
 
 # -----------------
 # DATA PREPARATION
@@ -114,7 +102,7 @@ app_ui = ui.page_sidebar(
         ui.input_checkbox_group(
             "visible_layers",
             None,
-            choices=_legend_choices(2005),
+            choices=legend_choices(2005),
             selected=["forest", "loss"],
         ),
     ),
@@ -177,14 +165,14 @@ def server(input, output, session):
     )
     _popup_cache = {"label": ""}
 
-    def on_click(*_, **__):  # noqa: ARG001
+    def on_click(*_, **__):  
         popup_content.value = _popup_cache["label"]
         popup.location = m.center
         if popup in m.layers:
             m.remove_layer(popup)
         m.add_layer(popup)
 
-    border_layer.on_click(on_click)  # register once
+    border_layer.on_click(on_click)
 
     _settlement_group: reactive.Value = reactive.value(None)
     _agriculture_group: reactive.Value = reactive.value(None)
@@ -199,15 +187,15 @@ def server(input, output, session):
         return input.year()
 
     @reactive.effect
-    def _():
+    def refresh_legend_labels():
         ui.update_checkbox_group(
             "visible_layers",
-            choices=_legend_choices(selected_year()),
+            choices=legend_choices(selected_year()),
             selected=input.visible_layers(),
         )
 
     @reactive.effect
-    async def _():
+    async def load_map_layers():
         iso = selected_iso()
         year = selected_year()
 
@@ -223,14 +211,10 @@ def server(input, output, session):
 
         cache_key = (iso, year)
         if cache_key not in _layer_cache:
-            iso_feature = next(
-                f for f in data["features"] if f["properties"]["GID_0"] == iso
-            )
-            ee_geometry = ee.Geometry(iso_feature["geometry"])
+            ee_geometry = get_ee_geometry(data, iso)
 
-            app_forest, app_agri, (_, settlement_loss_centroids), app_loss, (__, agriculture_loss_centroids) = await asyncio.gather(
+            app_forest, (_, settlement_loss_centroids), app_loss, (__, agriculture_loss_centroids) = await asyncio.gather(
                 asyncio.to_thread(compute_modis_forest_mask, igbp_land_cover, ee_geometry, year),
-                asyncio.to_thread(compute_agriculture_mask, igbp_land_cover, ee_geometry, year),
                 asyncio.to_thread(compute_state_forest_loss_in_settlements, igbp_land_cover, ee_geometry, year, country_name),
                 asyncio.to_thread(compute_forest_loss_mask, ee_geometry, year),
                 asyncio.to_thread(compute_state_forest_loss_in_agriculture, igbp_land_cover, ee_geometry, year, country_name),
@@ -238,10 +222,6 @@ def server(input, output, session):
 
             def get_forest_tile_url():
                 map_id = app_forest.getMapId({"min": 0, "max": 1, "palette": ["#228B22"]})
-                return map_id["tile_fetcher"].url_format
-
-            def get_agri_tile_url():
-                map_id = app_agri.getMapId({"min": 0, "max": 1, "palette": ["#FFA500"]})
                 return map_id["tile_fetcher"].url_format
 
             def get_loss_tile_url():
@@ -256,16 +236,14 @@ def server(input, output, session):
                     category_mask=app_forest,
                 )
 
-            forest_tile_url, agri_tile_url, loss_tile_url, coverage = await asyncio.gather(
+            forest_tile_url, loss_tile_url, coverage = await asyncio.gather(
                 asyncio.to_thread(get_forest_tile_url),
-                asyncio.to_thread(get_agri_tile_url),
                 asyncio.to_thread(get_loss_tile_url),
                 asyncio.to_thread(get_coverage),
             )
 
             _layer_cache[cache_key] = {
                 "forest_tile_url": forest_tile_url,
-                "agri_tile_url": agri_tile_url,
                 "loss_tile_url": loss_tile_url,
                 "coverage": coverage,
                 "settlement_loss_centroids": settlement_loss_centroids,
@@ -273,55 +251,26 @@ def server(input, output, session):
             }
 
         forest_tile_url = _layer_cache[cache_key]["forest_tile_url"]
-        agri_tile_url = _layer_cache[cache_key]["agri_tile_url"]
         loss_tile_url = _layer_cache[cache_key]["loss_tile_url"]
         coverage = _layer_cache[cache_key]["coverage"]
         settlement_loss_centroids = _layer_cache[cache_key]["settlement_loss_centroids"]
         agriculture_loss_centroids = _layer_cache[cache_key]["agriculture_loss_centroids"]
 
-        max_settlement_area = max((pt["loss_area_m2"] for pt in settlement_loss_centroids), default=1)
-        settlement_markers = LayerGroup(
-            layers=[
-                CircleMarker(
-                    location=[pt["lat"], pt["lon"]],
-                    radius=max(3, int(math.sqrt(pt["loss_area_m2"] / max_settlement_area) * 25)),
-                    color="#9B59B6",
-                    fill_color="#9B59B6",
-                    fill_opacity=0.7,
-                    weight=1,
-                    tooltip=f'{pt["name"]}: {pt["loss_area_m2"] / 1e6:.1f} km²',
-                )
-                for pt in settlement_loss_centroids
-            ],
-            name=f"Settlement_{iso}_{year}",
+        settlement_markers = build_loss_markers(
+            settlement_loss_centroids, "#9B59B6", f"Settlement_{iso}_{year}"
         )
-
         _settlement_group.set(settlement_markers)
 
-        max_agriculture_area = max((pt["loss_area_m2"] for pt in agriculture_loss_centroids), default=1)
-        agriculture_loss_markers = LayerGroup(
-            layers=[
-                CircleMarker(
-                    location=[pt["lat"], pt["lon"]],
-                    radius=max(3, int(math.sqrt(pt["loss_area_m2"] / max_agriculture_area) * 25)),
-                    color="#E67E22",
-                    fill_color="#E67E22",
-                    fill_opacity=0.7,
-                    weight=1,
-                    tooltip=f'{pt["name"]}: {pt["loss_area_m2"] / 1e6:.1f} km²',
-                )
-                for pt in agriculture_loss_centroids
-            ],
-            name=f"AgriLoss_{iso}_{year}",
+        agriculture_loss_markers = build_loss_markers(
+            agriculture_loss_centroids, "#E67E22", f"AgriLoss_{iso}_{year}"
         )
         _agriculture_group.set(agriculture_loss_markers)
 
         for layer in list(m.layers):
-            if layer.name.startswith(("Forest_", "Agriculture_", "AgriLoss_", "Settlement_", "Loss_")):
+            if layer.name.startswith(("Forest_", "AgriLoss_", "Settlement_", "Loss_")):
                 m.remove_layer(layer)
         m.add_layer(TileLayer(url=loss_tile_url, name=f"Loss_{iso}_{year}", opacity=0))
         m.add_layer(TileLayer(url=forest_tile_url, name=f"Forest_{iso}_{year}", opacity=0))
-        m.add_layer(TileLayer(url=agri_tile_url, name=f"Agriculture_{iso}_{year}", opacity=0))
 
         _popup_cache["label"] = (
             f"<b>{COUNTRY_NAMES.get(iso, iso)}</b><br>"
@@ -331,16 +280,15 @@ def server(input, output, session):
         ui.notification_remove(notif_id)
 
     @reactive.effect
-    def _():
+    def update_layer_visibility():
         try:
             visible = set(input.visible_layers())
         except Exception:
             return
 
         opacity_map = {
-            "Forest_":      ("forest",      0.5),
-            "Agriculture_": ("agriculture", 0.5),
-            "Loss_":        ("loss",        0.7),
+            "Forest_": ("forest", 0.5),
+            "Loss_":   ("loss",   0.7),
         }
         for layer in m.layers:
             name = getattr(layer, "name", "") or ""
@@ -362,15 +310,13 @@ def server(input, output, session):
 
     # Update border and recenter when country changes
     @reactive.effect
-    def _():
+    def update_border_and_recenter():
         sel_iso = selected_iso()
 
         gdf_iso = data_gdf.loc[[sel_iso]]
         min_lon, min_lat, max_lon, max_lat = gdf_iso.total_bounds
 
-        select_feature = next(
-            f for f in data["features"] if f["properties"]["GID_0"] == sel_iso
-        )
+        select_feature = get_iso_feature(data, sel_iso)
         border_layer.data = {
             "type": "FeatureCollection",
             "features": [select_feature],
@@ -389,15 +335,11 @@ def server(input, output, session):
         return fetch_forest_loss_by_driver(selected_iso())
 
     # Runs only when the country changes (not the year) — compute_agb_loss_time_series
-    # caches per iso internally, but depending only on selected_iso() here also avoids
-    # the redundant call (and its cache lookup) on every year change.
+    # caches per iso internally, but depending only on selected_iso() 
     @reactive.effect
-    async def _():
+    async def load_agb_loss_series():
         iso = selected_iso()
-        iso_feature = next(
-            f for f in data["features"] if f["properties"]["GID_0"] == iso
-        )
-        ee_geometry = ee.Geometry(iso_feature["geometry"])
+        ee_geometry = get_ee_geometry(data, iso)
 
         _agb_loss_series.set(None)  # signal "loading" to agb_loss_plot
         df = await asyncio.to_thread(
@@ -414,9 +356,7 @@ def server(input, output, session):
             df = gfw_forest_loss()
 
             if df.empty:
-                fig = px.bar(x=[], y=[], title="No data available.")
-                fig.update_layout(height=300)
-                return fig
+                return error_fig("No data available.")
 
             df["Year"] = df["umd_tree_cover_loss__year"]
             df["Forest Loss (kha)"] = (df["umd_tree_cover_loss__ha"] / 1000).round(2)
@@ -433,27 +373,10 @@ def server(input, output, session):
                 template="plotly_dark",
                 height=300,
             )
-            fig.update_layout(
-                autosize=True,
-                margin=dict(l=40, r=160, t=60, b=60),
-                legend=dict(
-                    orientation="v",
-                    x=1.02,
-                    y=1,
-                    xanchor="left",
-                    yanchor="top",
-                    font=dict(size=10),
-                    bgcolor="rgba(0,0,0,0)",
-                    title=dict(text="Driver", font=dict(size=11)),
-                ),
-            )
-            fig.update_xaxes(showticklabels=True, tickfont=dict(size=10))
-            return fig
+            return style_bar_fig(fig)
 
         except Exception as e:
-            fig = px.bar(x=[], y=[], title=f"Error fetching data: {e}")
-            fig.update_layout(height=300)
-            return fig
+            return error_fig(f"Error fetching data: {e}")
 
     @output
     @render_widget
@@ -464,14 +387,10 @@ def server(input, output, session):
             df = _agb_loss_series()
 
             if df is None:
-                fig = px.bar(x=[], y=[], title="Loading…")
-                fig.update_layout(height=300)
-                return fig
+                return error_fig("Loading…")
 
             if df.empty:
-                fig = px.bar(x=[], y=[], title="No data available.")
-                fig.update_layout(height=300)
-                return fig
+                return error_fig("No data available.")
 
             cumulative = input.agb_view() == "cumulative"
             if cumulative:
@@ -501,27 +420,10 @@ def server(input, output, session):
                 template="plotly_dark",
                 height=300,
             )
-            fig.update_layout(
-                autosize=True,
-                margin=dict(l=40, r=160, t=60, b=60),
-                legend=dict(
-                    orientation="v",
-                    x=1.02,
-                    y=1,
-                    xanchor="left",
-                    yanchor="top",
-                    font=dict(size=10),
-                    bgcolor="rgba(0,0,0,0)",
-                    title=dict(text="Driver", font=dict(size=11)),
-                ),
-            )
-            fig.update_xaxes(showticklabels=True, tickfont=dict(size=10))
-            return fig
+            return style_bar_fig(fig, xaxis_dtick=2)
 
         except Exception as e:
-            fig = px.bar(x=[], y=[], title=f"Error fetching data: {e}")
-            fig.update_layout(height=300)
-            return fig
+            return error_fig(f"Error fetching data: {e}")
 
 
 app = App(app_ui, server)
