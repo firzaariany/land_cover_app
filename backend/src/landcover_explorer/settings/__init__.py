@@ -16,16 +16,29 @@ LOG_LEVEL = Literal[
 class Settings(BaseSettings):
     google_earth_service_account: str
     google_earth_key: Path
-    collection_id: str
-    collection_band_name: str
-    collection_resolution: int
+
+    # MODIS land cover collection
+    modis_collection_id: str
+    modis_collection_band_name: str
+    modis_collection_resolution: int
     forest_only: bool = True
-    forest_codes_in_collection: str
-    agriculture_codes_in_collection: str 
-    settlements_codes_in_collection: str
-    hansen_dataset: str = "UMD/hansen/global_forest_change_2025_v1_13"
+    modis_forest_codes: str
+    modis_forest_colors: str
+    modis_forest_labels: str
+    modis_agriculture_codes: str | None
+    modis_settlement_codes: str | None
+
+    # Hansen Global Forest Change ("forest change") collection
+    forest_change_collection_id: str = "UMD/hansen/global_forest_change_2025_v1_13"
+    forest_change_collection_band_name: str = "lossyear"
+    forest_change_collection_resolution: int = 30
+
+    # ESA CCI Above Ground Biomass collection
     biomass_collection_id: str = "ESA/CCI/Above_Ground_Biomass/V6_0"
     biomass_collection_band_name: str = "agb"
+    biomass_collection_resolution: int = 100
+    biomass_collection_unit: str = "Mg/ha"
+
     gfw_api_key: str
     gfw_access_token: str
     gfw_dataset: str = "gadm__tcl__iso_change"

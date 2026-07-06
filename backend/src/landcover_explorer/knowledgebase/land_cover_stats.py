@@ -9,7 +9,7 @@ from landcover_explorer.settings import Settings
 
 settings = Settings()
 
-REDUCTION_SCALE = settings.collection_resolution
+REDUCTION_SCALE = settings.modis_collection_resolution
 
 # Land area per country is constant across years — cache to avoid recomputing.
 _land_area_cache: dict[str, float] = {}

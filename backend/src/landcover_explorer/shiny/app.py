@@ -2,20 +2,16 @@ import ee
 
 from landcover_explorer.settings import Settings
 from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
+    FOREST_COLOR_MAP,
     compute_forest_loss_mask,
+    compute_forest_type_mask,
     compute_modis_forest_mask,
-    compute_state_forest_loss_in_agriculture,
-    compute_state_forest_loss_in_settlements,
 )
 from landcover_explorer.knowledgebase.gfw_preprocess import fetch_forest_loss_by_driver
 from landcover_explorer.knowledgebase.land_cover_stats import calculate_coverage
-from landcover_explorer.knowledgebase.biomass_stats import (
-    compute_agb_loss_time_series,
-    compute_cumulative_agb_loss,
-)
 from landcover_explorer.shiny.app_helpers import (
-    build_loss_markers,
     error_fig,
+    forest_type_legend,
     get_ee_geometry,
     get_iso_feature,
     legend_choices,
@@ -51,8 +47,8 @@ credentials = ee.ServiceAccountCredentials(
 ee.Initialize(credentials)
 
 # MODIS land cover
-dataset = ee.ImageCollection(settings.collection_id)
-igbp_land_cover = dataset.select(settings.collection_band_name)
+dataset = ee.ImageCollection(settings.modis_collection_id)
+igbp_land_cover = dataset.select(settings.modis_collection_band_name)
 
 _layer_cache: dict = {}
 
@@ -105,33 +101,18 @@ app_ui = ui.page_sidebar(
             choices=legend_choices(2005),
             selected=["forest", "loss"],
         ),
+        forest_type_legend(),
     ),
     ui.card(
         output_widget("map"),
         height="500px",
         fillable=True,
     ),
-    ui.layout_columns(
-        ui.card(
-            output_widget("forest_area_plot"),
-            title="Forest loss by driver",
-            height="400px",
-            fillable=True,
-        ),
-        ui.card(
-            ui.input_select(
-                "agb_view",
-                None,
-                {"yearly": "Yearly", "cumulative": "Cumulative"},
-                selected="yearly",
-            ),
-            output_widget("agb_loss_plot"),
-            title="Aboveground biomass loss by driver",
-            height="400px",
-            fillable=True,
-        ),
-        col_widths=[6, 6],
-        gap="0.5rem",
+    ui.card(
+        output_widget("forest_area_plot"),
+        title="Forest loss by driver",
+        height="400px",
+        fillable=True,
     ),
     title="Explore Forest",
     fillable=True,
@@ -174,10 +155,6 @@ def server(input, output, session):
 
     border_layer.on_click(on_click)
 
-    _settlement_group: reactive.Value = reactive.value(None)
-    _agriculture_group: reactive.Value = reactive.value(None)
-    _agb_loss_series: reactive.Value = reactive.value(None)
-
     @reactive.calc
     def selected_iso():
         return input.country()
@@ -213,15 +190,15 @@ def server(input, output, session):
         if cache_key not in _layer_cache:
             ee_geometry = get_ee_geometry(data, iso)
 
-            app_forest, (_, settlement_loss_centroids), app_loss, (__, agriculture_loss_centroids) = await asyncio.gather(
+            app_forest, forest_type, app_loss = await asyncio.gather(
                 asyncio.to_thread(compute_modis_forest_mask, igbp_land_cover, ee_geometry, year),
-                asyncio.to_thread(compute_state_forest_loss_in_settlements, igbp_land_cover, ee_geometry, year, country_name),
+                asyncio.to_thread(compute_forest_type_mask, igbp_land_cover, ee_geometry, year),
                 asyncio.to_thread(compute_forest_loss_mask, ee_geometry, year),
-                asyncio.to_thread(compute_state_forest_loss_in_agriculture, igbp_land_cover, ee_geometry, year, country_name),
             )
 
             def get_forest_tile_url():
-                map_id = app_forest.getMapId({"min": 0, "max": 1, "palette": ["#228B22"]})
+                palette = list(FOREST_COLOR_MAP.values())
+                map_id = forest_type.getMapId({"min": 0, "max": len(palette) - 1, "palette": palette})
                 return map_id["tile_fetcher"].url_format
 
             def get_loss_tile_url():
@@ -246,31 +223,18 @@ def server(input, output, session):
                 "forest_tile_url": forest_tile_url,
                 "loss_tile_url": loss_tile_url,
                 "coverage": coverage,
-                "settlement_loss_centroids": settlement_loss_centroids,
-                "agriculture_loss_centroids": agriculture_loss_centroids,
             }
 
         forest_tile_url = _layer_cache[cache_key]["forest_tile_url"]
         loss_tile_url = _layer_cache[cache_key]["loss_tile_url"]
         coverage = _layer_cache[cache_key]["coverage"]
-        settlement_loss_centroids = _layer_cache[cache_key]["settlement_loss_centroids"]
-        agriculture_loss_centroids = _layer_cache[cache_key]["agriculture_loss_centroids"]
-
-        settlement_markers = build_loss_markers(
-            settlement_loss_centroids, "#9B59B6", f"Settlement_{iso}_{year}"
-        )
-        _settlement_group.set(settlement_markers)
-
-        agriculture_loss_markers = build_loss_markers(
-            agriculture_loss_centroids, "#E67E22", f"AgriLoss_{iso}_{year}"
-        )
-        _agriculture_group.set(agriculture_loss_markers)
 
         for layer in list(m.layers):
-            if layer.name.startswith(("Forest_", "AgriLoss_", "Settlement_", "Loss_")):
+            if layer.name.startswith(("Forest_", "Loss_")):
                 m.remove_layer(layer)
         m.add_layer(TileLayer(url=loss_tile_url, name=f"Loss_{iso}_{year}", opacity=0))
         m.add_layer(TileLayer(url=forest_tile_url, name=f"Forest_{iso}_{year}", opacity=0))
+        apply_layer_opacity()
 
         _popup_cache["label"] = (
             f"<b>{COUNTRY_NAMES.get(iso, iso)}</b><br>"
@@ -279,8 +243,7 @@ def server(input, output, session):
 
         ui.notification_remove(notif_id)
 
-    @reactive.effect
-    def update_layer_visibility():
+    def apply_layer_opacity():
         try:
             visible = set(input.visible_layers())
         except Exception:
@@ -296,17 +259,9 @@ def server(input, output, session):
                 if name.startswith(prefix):
                     layer.opacity = target_opacity if key in visible else 0
 
-        # Remove all marker groups first so they can be re-added in a fixed
-        # z-order: settlements below, agriculture_loss on top.
-        _marker_groups = (("settlements", _settlement_group), ("agriculture_loss", _agriculture_group))
-        for _, group_val in _marker_groups:
-            grp = group_val()
-            if grp is not None and grp in m.layers:
-                m.remove_layer(grp)
-        for key, group_val in _marker_groups:
-            grp = group_val()
-            if grp is not None and key in visible:
-                m.add_layer(grp)
+    @reactive.effect
+    def update_layer_visibility():
+        apply_layer_opacity()
 
     # Update border and recenter when country changes
     @reactive.effect
@@ -333,19 +288,6 @@ def server(input, output, session):
     @reactive.calc
     def gfw_forest_loss():
         return fetch_forest_loss_by_driver(selected_iso())
-
-    # Runs only when the country changes (not the year) — compute_agb_loss_time_series
-    # caches per iso internally, but depending only on selected_iso() 
-    @reactive.effect
-    async def load_agb_loss_series():
-        iso = selected_iso()
-        ee_geometry = get_ee_geometry(data, iso)
-
-        _agb_loss_series.set(None)  # signal "loading" to agb_loss_plot
-        df = await asyncio.to_thread(
-            compute_agb_loss_time_series, iso, igbp_land_cover, ee_geometry
-        )
-        _agb_loss_series.set(df)
 
     @output
     @render_widget
@@ -374,53 +316,6 @@ def server(input, output, session):
                 height=300,
             )
             return style_bar_fig(fig)
-
-        except Exception as e:
-            return error_fig(f"Error fetching data: {e}")
-
-    @output
-    @render_widget
-    def agb_loss_plot():
-        sel_iso = selected_iso()
-
-        try:
-            df = _agb_loss_series()
-
-            if df is None:
-                return error_fig("Loading…")
-
-            if df.empty:
-                return error_fig("No data available.")
-
-            cumulative = input.agb_view() == "cumulative"
-            if cumulative:
-                df = compute_cumulative_agb_loss(sel_iso, df)
-
-            df_long = df.melt(
-                id_vars="year",
-                value_vars=["agriculture_agb_Mt", "settlement_agb_Mt"],
-                var_name="Driver",
-                value_name="AGB Loss (Mt)",
-            )
-            df_long["Driver"] = df_long["Driver"].map({
-                "agriculture_agb_Mt": "Agriculture",
-                "settlement_agb_Mt": "Settlements",
-            })
-
-            title_prefix = "Cumulative " if cumulative else ""
-            fig = px.bar(
-                df_long,
-                x="year",
-                y="AGB Loss (Mt)",
-                color="Driver",
-                barmode="stack",
-                opacity=0.8,
-                title=f"{title_prefix}Aboveground Biomass Loss by Driver in {COUNTRY_NAMES.get(sel_iso, sel_iso)}",
-                color_discrete_map={"Agriculture": "#FFA500", "Settlements": "#9B59B6"},
-                template="plotly_dark",
-                height=300,
-            )
-            return style_bar_fig(fig, xaxis_dtick=2)
 
         except Exception as e:
             return error_fig(f"Error fetching data: {e}")

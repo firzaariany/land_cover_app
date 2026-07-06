@@ -1,9 +1,11 @@
-import math
-
 import ee
 import plotly.express as px
-from ipyleaflet import CircleMarker, LayerGroup
 from shiny import ui
+
+from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
+    FOREST_COLOR_MAP,
+    FOREST_TYPE_LABELS,
+)
 
 
 def get_iso_feature(data: dict, iso: str) -> dict:
@@ -12,25 +14,6 @@ def get_iso_feature(data: dict, iso: str) -> dict:
 
 def get_ee_geometry(data: dict, iso: str) -> ee.Geometry:
     return ee.Geometry(get_iso_feature(data, iso)["geometry"])
-
-
-def build_loss_markers(centroids: list, color: str, layer_name: str) -> LayerGroup:
-    max_area = max((pt["loss_area_m2"] for pt in centroids), default=1)
-    return LayerGroup(
-        layers=[
-            CircleMarker(
-                location=[pt["lat"], pt["lon"]],
-                radius=max(3, int(math.sqrt(pt["loss_area_m2"] / max_area) * 25)),
-                color=color,
-                fill_color=color,
-                fill_opacity=0.7,
-                weight=1,
-                tooltip=f'{pt["name"]}: {pt["loss_area_m2"] / 1e6:.1f} km²',
-            )
-            for pt in centroids
-        ],
-        name=layer_name,
-    )
 
 
 def swatch(color: str) -> str:
@@ -42,11 +25,22 @@ def swatch(color: str) -> str:
 
 def legend_choices(year: int) -> dict:
     return {
-        "forest":           ui.HTML(f'{swatch("#228B22")} Forest cover {year}'),
-        "agriculture_loss": ui.HTML(f'{swatch("#E67E22")} Forest loss in agriculture 2001–{year}'),
-        "settlements":      ui.HTML(f'{swatch("#9B59B6")} Forest loss in settlements 2001–{year}'),
-        "loss":             ui.HTML(f'{swatch("#CC0000")} Forest loss 2000–{year}'),
+        "forest": ui.HTML(f'{swatch("#228B22")} Forest cover {year}'),
+        "loss":   ui.HTML(f'{swatch("#CC0000")} Forest loss 2000–{year}'),
     }
+
+
+def forest_type_legend() -> ui.Tag:
+    """Static color key for the forest subtypes rendered by the categorical
+    forest cover tile (see FOREST_COLOR_MAP / compute_forest_type_mask)."""
+    rows = "".join(
+        f'<div style="margin:2px 0;">{swatch(color)}{FOREST_TYPE_LABELS[code]}</div>'
+        for code, color in FOREST_COLOR_MAP.items()
+    )
+    return ui.div(
+        ui.HTML(rows),
+        style="font-size:11px; margin-left:18px; margin-top:2px;",
+    )
 
 
 def style_bar_fig(fig, xaxis_dtick: int | None = None):
