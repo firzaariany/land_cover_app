@@ -6,54 +6,70 @@ from landcover_explorer.settings import Settings
 
 settings = Settings()
 
-FOREST_CODES = [int(x) for x in settings.modis_forest_codes.split(",")]
-FOREST_CHANGE_DATASET = settings.forest_change_collection_id
-FOREST_CHANGE_BAND_NAME = settings.forest_change_collection_band_name
 tile_collection_resolution = settings.modis_collection_resolution
+
+FOREST_COLLECTION = settings.modis_collection_id
+FOREST_BAND_NAME = settings.modis_collection_band_name
+FOREST_CODES = [int(x) for x in settings.modis_forest_codes.split(",")]
 FOREST_COLOR_MAP = dict(zip(FOREST_CODES, settings.modis_forest_colors.split(",")))
 FOREST_TYPE_LABELS = dict(zip(FOREST_CODES, settings.modis_forest_labels.split(",")))
 
+FOREST_CHANGE_DATASET = settings.forest_change_collection_id
+FOREST_CHANGE_BAND_NAME = settings.forest_change_collection_band_name
 
-def _compute_mask(land_cover_dataset, geometry, select_year, codes):
-    image = land_cover_dataset.filter(
-        ee.Filter.calendarRange(select_year, select_year, "year")
-    ).first()
-    return (
-        image.remap(codes, [1] * len(codes), 0)
-        .selfMask()
-        .clip(geometry)
-    )
+BIOMASS_BAND_NAME = settings.biomass_collection_band_name
+
+FOREST_RISK_SCORE = 3
 
 
-def compute_modis_forest_mask(land_cover_dataset, geometry, select_year):
-    """Raw MODIS forest pixels for select_year, with no Hansen loss adjustment."""
-    return _compute_mask(land_cover_dataset, geometry, select_year, FOREST_CODES)
+def load_image(
+    collection_id: str, band_name: str, select_year: int, geometry: ee.Geometry
+) -> ee.Image | None:
+    """Load a single band image for select_year from collection_id, clipped to geometry.
 
-
-def compute_forest_type_mask(land_cover_dataset, geometry, select_year):
-    """MODIS forest pixels for select_year, remapped to sequential indices 0..N-1 in
-    FOREST_COLOR_MAP order so they render with a plain min/max/palette visualization
-    (FOREST_COLOR_MAP's codes aren't contiguous, so a direct min/max on the raw LC_Prop1
-    codes would blend in colors for the gaps). Non-forest pixels are masked by remap's
-    default behavior (any code not listed is masked when no defaultValue is given).
+    Returns None if collection_id has no image for select_year.
     """
-    image = land_cover_dataset.filter(
+    filtered = ee.ImageCollection(collection_id).select(band_name).filter(
         ee.Filter.calendarRange(select_year, select_year, "year")
-    ).first()
-    codes = list(FOREST_COLOR_MAP.keys())
-    new_classes = [0, 1, 2, 3, 4]
-    remapped = image.remap(codes, new_classes)
-    return remapped.clip(geometry)
-
-
-def compute_forest_loss_mask(geometry, select_year):
-    lossyear = ee.Image(FOREST_CHANGE_DATASET).select(FOREST_CHANGE_BAND_NAME)
-    return (
-        lossyear.lte(select_year - 2000)
-        .And(lossyear.gt(0))
-        .selfMask()
-        .clip(geometry)
     )
+    if filtered.size().getInfo() == 0:
+        return None
+    return filtered.first().clip(geometry)
+
+
+def reproject_to_reference(
+    image: ee.Image,
+    reference_image: ee.Image,
+    max_pixels: int = 1024,
+) -> ee.Image:
+    """Aggregate image's finer-resolution pixels with reducer and reproject to
+    reference_image's projection."""
+    return image.reduceResolution(reducer=ee.Reducer.mean(), maxPixels=max_pixels).reproject(
+        crs=reference_image.projection()
+    )
+
+
+def assign_forest_type_risk_score(image: ee.Image) -> ee.Image:
+    """Remap MODIS LC_Prop1 forest codes to a constant forest risk score of 3.
+    Non-forest pixels are masked by remap's default behavior (any code not listed
+    is masked when no defaultValue is given).
+    """
+    codes = list(FOREST_COLOR_MAP.keys())
+    risk_scores = [FOREST_RISK_SCORE] * len(codes)
+    return image.remap(codes, risk_scores)
+
+
+def assign_biomass_risk_score(image: ee.Image) -> ee.Image:
+    """Map AGB values to a risk score: 0 -> 0, (0, 50] -> 1, (50, 200] -> 2,
+    (200, 500] -> 3. Masked/NaN input pixels remain masked in the output."""
+    return (
+        ee.Image(0)
+        .where(image.gt(0).And(image.lte(50)), 1)
+        .where(image.gt(50).And(image.lte(200)), 2)
+        .where(image.gt(200).And(image.lte(500)), 3)
+        .updateMask(image.mask())
+    )
+
 
 ### START: TO BE DELETED ###
 # def _compute_loss_fraction(reference_image, select_year, geometry):
@@ -61,6 +77,33 @@ def compute_forest_loss_mask(geometry, select_year):
 #     lossyear = ee.Image(FOREST_CHANGE_DATASET).select(FOREST_CHANGE_BAND_NAME).clip(geometry)
 #     cumulative_loss_30m = lossyear.lte(select_year - 2000).And(lossyear.gt(0)).selfMask()
 #     return cumulative_loss_30m.updateMask(reference_image)
+
+
+# def _compute_mask(land_cover_dataset, geometry, select_year, codes):
+#     image = land_cover_dataset.filter(
+#         ee.Filter.calendarRange(select_year, select_year, "year")
+#     ).first()
+#     return image.remap(codes, [1] * len(codes), 0).selfMask().clip(geometry)
+
+
+# def compute_modis_forest_mask(land_cover_dataset, geometry, select_year):
+#     """Raw MODIS forest pixels for select_year, with no Hansen loss adjustment."""
+#     return _compute_mask(land_cover_dataset, geometry, select_year, FOREST_CODES)
+
+
+# def compute_forest_type_mask(land_cover_dataset, geometry, select_year):
+#     """MODIS forest pixels for select_year, remapped via assign_forest_type_risk_score."""
+#     image = land_cover_dataset.filter(
+#         ee.Filter.calendarRange(select_year, select_year, "year")
+#     ).first()
+#     return assign_forest_type_risk_score(image).clip(geometry)
+
+
+# def compute_forest_loss_mask(geometry, select_year):
+#     lossyear = ee.Image(FOREST_CHANGE_DATASET).select(FOREST_CHANGE_BAND_NAME)
+#     return (
+#         lossyear.lte(select_year - 2000).And(lossyear.gt(0)).selfMask().clip(geometry)
+#     )
 
 
 # def compute_forest_mask(land_cover_dataset, geometry, select_year, loss_threshold=0.5):

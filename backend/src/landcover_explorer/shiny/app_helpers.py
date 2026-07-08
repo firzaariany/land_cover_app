@@ -2,11 +2,6 @@ import ee
 import plotly.express as px
 from shiny import ui
 
-from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
-    FOREST_COLOR_MAP,
-    FOREST_TYPE_LABELS,
-)
-
 
 def get_iso_feature(data: dict, iso: str) -> dict:
     return next(f for f in data["features"] if f["properties"]["GID_0"] == iso)
@@ -23,24 +18,8 @@ def swatch(color: str) -> str:
     )
 
 
-def legend_choices(year: int) -> dict:
-    return {
-        "forest": ui.HTML(f'{swatch("#228B22")} Forest cover {year}'),
-        "loss":   ui.HTML(f'{swatch("#CC0000")} Forest loss 2000–{year}'),
-    }
-
-
-def forest_type_legend() -> ui.Tag:
-    """Static color key for the forest subtypes rendered by the categorical
-    forest cover tile (see FOREST_COLOR_MAP / compute_forest_type_mask)."""
-    rows = "".join(
-        f'<div style="margin:2px 0;">{swatch(color)}{FOREST_TYPE_LABELS[code]}</div>'
-        for code, color in FOREST_COLOR_MAP.items()
-    )
-    return ui.div(
-        ui.HTML(rows),
-        style="font-size:11px; margin-left:18px; margin-top:2px;",
-    )
+def forest_cover_legend_choice(year: int) -> dict:
+    return {"forest": ui.HTML(f'{swatch("#05450a")} Forest cover 2000-{year}')}
 
 
 def style_bar_fig(fig, xaxis_dtick: int | None = None):

@@ -2,19 +2,21 @@ import ee
 
 from landcover_explorer.settings import Settings
 from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
-    FOREST_COLOR_MAP,
-    compute_forest_loss_mask,
-    compute_forest_type_mask,
-    compute_modis_forest_mask,
+    BIOMASS_BAND_NAME,
+    FOREST_BAND_NAME,
+    FOREST_COLLECTION,
+    assign_biomass_risk_score,
+    assign_forest_type_risk_score,
+    load_image,
+    reproject_to_reference,
 )
 from landcover_explorer.knowledgebase.gfw_preprocess import fetch_forest_loss_by_driver
 from landcover_explorer.knowledgebase.land_cover_stats import calculate_coverage
 from landcover_explorer.shiny.app_helpers import (
     error_fig,
-    forest_type_legend,
+    forest_cover_legend_choice,
     get_ee_geometry,
     get_iso_feature,
-    legend_choices,
     style_bar_fig,
 )
 
@@ -45,12 +47,6 @@ credentials = ee.ServiceAccountCredentials(
     settings.google_earth_service_account, str(settings.google_earth_key)
 )
 ee.Initialize(credentials)
-
-# MODIS land cover
-dataset = ee.ImageCollection(settings.modis_collection_id)
-igbp_land_cover = dataset.select(settings.modis_collection_band_name)
-
-_layer_cache: dict = {}
 
 # Can list more countries -> To be set up in a separate module
 COUNTRY_NAMES = {
@@ -98,10 +94,9 @@ app_ui = ui.page_sidebar(
         ui.input_checkbox_group(
             "visible_layers",
             None,
-            choices=legend_choices(2005),
-            selected=["forest", "loss"],
+            choices=forest_cover_legend_choice(2005),
+            selected=["forest"],
         ),
-        forest_type_legend(),
     ),
     ui.card(
         output_widget("map"),
@@ -128,6 +123,8 @@ def server(input, output, session):
     m.add_control(LayersControl())
     register_widget("map", m)
 
+    _forest_layer_cache: dict = {}
+
     border_layer = GeoJSON(
         data={"type": "FeatureCollection", "features": []},
         style={"color": "black", "fillColor": "transparent", "weight": 2},
@@ -135,8 +132,7 @@ def server(input, output, session):
     )
     m.add_layer(border_layer)
 
-    # Hover popup — cache label in a plain dict so the on_click callback
-    # (which runs outside Shiny's reactive graph) can read the latest value
+    # Hover popup showing forest coverage
     popup_content = HTML("")
     popup = Popup(
         child=popup_content,
@@ -164,19 +160,30 @@ def server(input, output, session):
         return input.year()
 
     @reactive.effect
-    def refresh_legend_labels():
+    def refresh_forest_legend_label():
         ui.update_checkbox_group(
             "visible_layers",
-            choices=legend_choices(selected_year()),
+            choices=forest_cover_legend_choice(selected_year()),
             selected=input.visible_layers(),
         )
 
+    def apply_forest_layer_visibility():
+        try:
+            visible = set(input.visible_layers())
+        except Exception:
+            return
+        for layer in m.layers:
+            if getattr(layer, "name", "").startswith("Forest_"):
+                layer.opacity = 0.7 if "forest" in visible else 0
+
     @reactive.effect
-    async def load_map_layers():
+    def update_forest_layer_visibility():
+        apply_forest_layer_visibility()
+
+    @reactive.effect
+    async def load_forest_cover_layer():
         iso = selected_iso()
         year = selected_year()
-
-        print(f"Processing data for {iso} in {year}", flush=True)
 
         country_name = COUNTRY_NAMES.get(iso, iso)
         notif_id = ui.notification_show(
@@ -184,84 +191,78 @@ def server(input, output, session):
             duration=None,
             type="message",
         )
-        await asyncio.sleep(0)
+        await asyncio.sleep(0)  # flush notification to browser before blocking
 
         cache_key = (iso, year)
-        if cache_key not in _layer_cache:
+        if cache_key not in _forest_layer_cache:
             ee_geometry = get_ee_geometry(data, iso)
 
-            app_forest, forest_type, app_loss = await asyncio.gather(
-                asyncio.to_thread(compute_modis_forest_mask, igbp_land_cover, ee_geometry, year),
-                asyncio.to_thread(compute_forest_type_mask, igbp_land_cover, ee_geometry, year),
-                asyncio.to_thread(compute_forest_loss_mask, ee_geometry, year),
-            )
+            def get_forest_cover_layer_data():
+                forest_result = None
+                forest_dataset = load_image(FOREST_COLLECTION, FOREST_BAND_NAME, year, ee_geometry)
+                if forest_dataset is not None:
+                    forest_cover = assign_forest_type_risk_score(forest_dataset)
+                    forest_map_id = forest_cover.getMapId({"min": 3, "max": 3, "palette": "#05450a"})
+                    coverage = calculate_coverage(
+                        iso=iso,
+                        year=year,
+                        country_geometry=ee_geometry,
+                        forest_cover=forest_cover,
+                    )
+                    forest_result = {
+                        "tile_url": forest_map_id["tile_fetcher"].url_format,
+                        "coverage": coverage,
+                    }
 
-            def get_forest_tile_url():
-                palette = list(FOREST_COLOR_MAP.values())
-                map_id = forest_type.getMapId({"min": 0, "max": len(palette) - 1, "palette": palette})
-                return map_id["tile_fetcher"].url_format
-
-            def get_loss_tile_url():
-                map_id = app_loss.getMapId({"min": 0, "max": 1, "palette": ["#CC0000"]})
-                return map_id["tile_fetcher"].url_format
-
-            def get_coverage():
-                return calculate_coverage(
-                    iso=iso,
-                    year=year,
-                    country_geometry=ee_geometry,
-                    category_mask=app_forest,
+                biomass_result = None
+                biomass_image = load_image(
+                    settings.biomass_collection_id, BIOMASS_BAND_NAME, year, ee_geometry
                 )
+                if biomass_image is not None:
+                    reference = forest_dataset if forest_dataset is not None else biomass_image
+                    biomass_reprojected = reproject_to_reference(biomass_image, reference)
+                    biomass_risk = assign_biomass_risk_score(biomass_reprojected)
+                    biomass_map_id = biomass_risk.getMapId({
+                        "min": 0,
+                        "max": 3,
+                        "palette": ["#ffffb2", "#fecc5c", "#fd8d3c", "#e31a1c"],
+                    })
+                    biomass_result = {"tile_url": biomass_map_id["tile_fetcher"].url_format}
 
-            forest_tile_url, loss_tile_url, coverage = await asyncio.gather(
-                asyncio.to_thread(get_forest_tile_url),
-                asyncio.to_thread(get_loss_tile_url),
-                asyncio.to_thread(get_coverage),
-            )
+                return {
+                    "forest_tile_url": forest_result["tile_url"] if forest_result else None,
+                    "coverage": forest_result["coverage"] if forest_result else None,
+                    "biomass_tile_url": biomass_result["tile_url"] if biomass_result else None,
+                }
 
-            _layer_cache[cache_key] = {
-                "forest_tile_url": forest_tile_url,
-                "loss_tile_url": loss_tile_url,
-                "coverage": coverage,
-            }
+            _forest_layer_cache[cache_key] = await asyncio.to_thread(get_forest_cover_layer_data)
 
-        forest_tile_url = _layer_cache[cache_key]["forest_tile_url"]
-        loss_tile_url = _layer_cache[cache_key]["loss_tile_url"]
-        coverage = _layer_cache[cache_key]["coverage"]
+        layer_data = _forest_layer_cache[cache_key]
 
         for layer in list(m.layers):
-            if layer.name.startswith(("Forest_", "Loss_")):
+            if layer.name.startswith(("Forest_", "Biomass_")):
                 m.remove_layer(layer)
-        m.add_layer(TileLayer(url=loss_tile_url, name=f"Loss_{iso}_{year}", opacity=0))
-        m.add_layer(TileLayer(url=forest_tile_url, name=f"Forest_{iso}_{year}", opacity=0))
-        apply_layer_opacity()
+        if layer_data["forest_tile_url"]:
+            m.add_layer(TileLayer(
+                url=layer_data["forest_tile_url"], name=f"Forest_{iso}_{year}", opacity=0.7
+            ))
+        if layer_data["biomass_tile_url"]:
+            m.add_layer(TileLayer(
+                url=layer_data["biomass_tile_url"], name=f"Biomass_{iso}_{year}", opacity=0.7
+            ))
+        apply_forest_layer_visibility()
 
+        coverage_text = (
+            f"Forest cover {year}: {layer_data['coverage']['coverage_pct']}%"
+            if layer_data["coverage"]
+            else f"No forest cover data for {year}"
+        )
         _popup_cache["label"] = (
             f"<b>{COUNTRY_NAMES.get(iso, iso)}</b><br>"
-            f"Forest cover {year}: {coverage['coverage_pct']}%"
+            f"{coverage_text}"
         )
 
         ui.notification_remove(notif_id)
-
-    def apply_layer_opacity():
-        try:
-            visible = set(input.visible_layers())
-        except Exception:
-            return
-
-        opacity_map = {
-            "Forest_": ("forest", 0.5),
-            "Loss_":   ("loss",   0.7),
-        }
-        for layer in m.layers:
-            name = getattr(layer, "name", "") or ""
-            for prefix, (key, target_opacity) in opacity_map.items():
-                if name.startswith(prefix):
-                    layer.opacity = target_opacity if key in visible else 0
-
-    @reactive.effect
-    def update_layer_visibility():
-        apply_layer_opacity()
 
     # Update border and recenter when country changes
     @reactive.effect
