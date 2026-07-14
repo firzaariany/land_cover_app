@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+
+set -e
+
+uv run python scripts/export_distance_risk_assets.py
