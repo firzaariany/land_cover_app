@@ -7,11 +7,18 @@ from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
     FOREST_COLLECTION,
     assign_biomass_risk_score,
     assign_forest_type_risk_score,
+    compute_aggregate_risk_score,
     load_image,
-    reproject_to_reference,
+    aggregate_for_resampling,
 )
 from landcover_explorer.knowledgebase.gfw_preprocess import fetch_forest_loss_by_driver
 from landcover_explorer.knowledgebase.land_cover_stats import calculate_coverage
+from landcover_explorer.knowledgebase.risk_stats import (
+    ISO_TO_ADM0_NAME,
+    build_highlight_image,
+    top_n_admin1_by_risk3_area,
+    top_n_admin1_collection_by_risk3_area,
+)
 from landcover_explorer.shiny.app_helpers import (
     error_fig,
     forest_cover_legend_choice,
@@ -84,8 +91,8 @@ app_ui = ui.page_sidebar(
             "year",
             "Select a year",
             min=2005,
-            max=2020,
-            value=2005,
+            max=2025,
+            value=2020,
             sep="",
         ),
         ui.input_dark_mode(mode="dark"),
@@ -95,7 +102,7 @@ app_ui = ui.page_sidebar(
             "visible_layers",
             None,
             choices=forest_cover_legend_choice(2005),
-            selected=["forest"],
+            selected=["forest", "biomass", "aggregate"],
         ),
     ),
     ui.card(
@@ -173,8 +180,13 @@ def server(input, output, session):
         except Exception:
             return
         for layer in m.layers:
-            if getattr(layer, "name", "").startswith("Forest_"):
+            name = getattr(layer, "name", "")
+            if name.startswith("Forest_"):
                 layer.opacity = 0.7 if "forest" in visible else 0
+            elif name.startswith("Biomass_"):
+                layer.opacity = 0.7 if "biomass" in visible else 0
+            elif name.startswith("Aggregate_"):
+                layer.opacity = 0.7 if "aggregate" in visible else 0
 
     @reactive.effect
     def update_forest_layer_visibility():
@@ -199,15 +211,16 @@ def server(input, output, session):
 
             def get_forest_cover_layer_data():
                 forest_result = None
+                forest_risk_score = None
                 forest_dataset = load_image(FOREST_COLLECTION, FOREST_BAND_NAME, year, ee_geometry)
                 if forest_dataset is not None:
-                    forest_cover = assign_forest_type_risk_score(forest_dataset)
-                    forest_map_id = forest_cover.getMapId({"min": 3, "max": 3, "palette": "#05450a"})
+                    forest_risk_score = assign_forest_type_risk_score(forest_dataset)
+                    forest_map_id = forest_risk_score.getMapId({"min": 3, "max": 3, "palette": "#05450a"})
                     coverage = calculate_coverage(
                         iso=iso,
                         year=year,
                         country_geometry=ee_geometry,
-                        forest_cover=forest_cover,
+                        forest_cover=forest_risk_score,
                     )
                     forest_result = {
                         "tile_url": forest_map_id["tile_fetcher"].url_format,
@@ -215,24 +228,57 @@ def server(input, output, session):
                     }
 
                 biomass_result = None
+                biomass_risk_score = None
                 biomass_image = load_image(
                     settings.biomass_collection_id, BIOMASS_BAND_NAME, year, ee_geometry
                 )
                 if biomass_image is not None:
-                    reference = forest_dataset if forest_dataset is not None else biomass_image
-                    biomass_reprojected = reproject_to_reference(biomass_image, reference)
-                    biomass_risk = assign_biomass_risk_score(biomass_reprojected)
-                    biomass_map_id = biomass_risk.getMapId({
+                    biomass_reprojected = aggregate_for_resampling(biomass_image)
+                    biomass_risk_score = assign_biomass_risk_score(biomass_reprojected)
+                    biomass_map_id = biomass_risk_score.getMapId({
                         "min": 0,
                         "max": 3,
                         "palette": ["#ffffb2", "#fecc5c", "#fd8d3c", "#e31a1c"],
                     })
                     biomass_result = {"tile_url": biomass_map_id["tile_fetcher"].url_format}
 
+                aggregate_result = None
+                if (
+                    forest_risk_score is not None
+                    and biomass_risk_score is not None
+                    and iso in ISO_TO_ADM0_NAME
+                ):
+                    # Distance-to-loss risk is left out until the on-demand export/wait
+                    # UX (see distance_risk_assets.py) is wired in — a neutral 0
+                    # contribution means AGB and forest presence alone drive this
+                    # aggregate score for now.
+                    distance_risk_placeholder = ee.Image(0)
+                    aggregate_risk_score = compute_aggregate_risk_score(
+                        biomass_risk_score, forest_risk_score, distance_risk_placeholder
+                    )
+                    aggregate_map_id = aggregate_risk_score.getMapId({
+                        "min": 0,
+                        "max": 3,
+                        "palette": ["#ffffff", "#ffff00", "#ff8c00", "#ff0000", "#8b0000"],
+                    })
+                    top5_ranking = top_n_admin1_by_risk3_area(iso, aggregate_risk_score, n=5)
+                    top5_collection = top_n_admin1_collection_by_risk3_area(
+                        iso, aggregate_risk_score, n=5
+                    )
+                    top5_map_id = build_highlight_image(top5_collection).getMapId()
+                    aggregate_result = {
+                        "tile_url": aggregate_map_id["tile_fetcher"].url_format,
+                        "top5_tile_url": top5_map_id["tile_fetcher"].url_format,
+                        "top5_ranking": top5_ranking,
+                    }
+
                 return {
                     "forest_tile_url": forest_result["tile_url"] if forest_result else None,
                     "coverage": forest_result["coverage"] if forest_result else None,
                     "biomass_tile_url": biomass_result["tile_url"] if biomass_result else None,
+                    "aggregate_tile_url": aggregate_result["tile_url"] if aggregate_result else None,
+                    "top5_tile_url": aggregate_result["top5_tile_url"] if aggregate_result else None,
+                    "top5_ranking": aggregate_result["top5_ranking"] if aggregate_result else None,
                 }
 
             _forest_layer_cache[cache_key] = await asyncio.to_thread(get_forest_cover_layer_data)
@@ -240,7 +286,7 @@ def server(input, output, session):
         layer_data = _forest_layer_cache[cache_key]
 
         for layer in list(m.layers):
-            if layer.name.startswith(("Forest_", "Biomass_")):
+            if layer.name.startswith(("Forest_", "Biomass_", "Aggregate_")):
                 m.remove_layer(layer)
         if layer_data["forest_tile_url"]:
             m.add_layer(TileLayer(
@@ -249,6 +295,10 @@ def server(input, output, session):
         if layer_data["biomass_tile_url"]:
             m.add_layer(TileLayer(
                 url=layer_data["biomass_tile_url"], name=f"Biomass_{iso}_{year}", opacity=0.7
+            ))
+        if layer_data["aggregate_tile_url"]:
+            m.add_layer(TileLayer(
+                url=layer_data["aggregate_tile_url"], name=f"Aggregate_{iso}_{year}", opacity=0.7
             ))
         apply_forest_layer_visibility()
 

@@ -17,15 +17,15 @@ tile_collection_resolution = settings.modis_collection_resolution
 # _agb_loss_cumulative_cache: dict[str, pd.DataFrame] = {}
 
 
-def import_biomass_layer(select_year, geometry):
-    agb_data = ee.ImageCollection(BIOMASS_DATA).select(BIOMASS_BAND)
-    agb_data_selected = (
-        agb_data.filter(ee.Filter.calendarRange(select_year, select_year, "year"))
-        .first()
-        .clip(geometry)
-    )
+# def import_biomass_layer(select_year, geometry):
+#     agb_data = ee.ImageCollection(BIOMASS_DATA).select(BIOMASS_BAND)
+#     agb_data_selected = (
+#         agb_data.filter(ee.Filter.calendarRange(select_year, select_year, "year"))
+#         .first()
+#         .clip(geometry)
+#     )
 
-    return agb_data_selected
+#     return agb_data_selected
 
 
 # def compute_agb_loss_by_driver(land_cover_dataset, geometry, select_year):

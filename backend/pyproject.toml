@@ -23,6 +23,7 @@ dependencies = [
     "earthengine-api",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.1",
+    "matplotlib>=3.11.0",
 ]
 
 [dependency-groups]

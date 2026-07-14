@@ -19,7 +19,11 @@ def swatch(color: str) -> str:
 
 
 def forest_cover_legend_choice(year: int) -> dict:
-    return {"forest": ui.HTML(f'{swatch("#05450a")} Forest cover 2000-{year}')}
+    return {
+        "forest": ui.HTML(f'{swatch("#05450a")} Forest cover {year}'),
+        "biomass": ui.HTML(f'{swatch("#fd8d3c")} Above-ground biomass risk {year}'),
+        "aggregate": ui.HTML(f'{swatch("#ff0000")} Aggregate risk score {year}'),
+    }
 
 
 def style_bar_fig(fig, xaxis_dtick: int | None = None):

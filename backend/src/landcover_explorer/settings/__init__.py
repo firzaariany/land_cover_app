@@ -16,6 +16,7 @@ LOG_LEVEL = Literal[
 class Settings(BaseSettings):
     google_earth_service_account: str
     google_earth_key: Path
+    google_earth_project_id: str
 
     # MODIS land cover collection
     modis_collection_id: str
@@ -30,7 +31,8 @@ class Settings(BaseSettings):
 
     # Hansen Global Forest Change ("forest change") collection
     forest_change_collection_id: str = "UMD/hansen/global_forest_change_2025_v1_13"
-    forest_change_collection_band_name: str = "lossyear"
+    forest_change_binary_band_name: str = "loss"
+    forest_change_loss_year_band_name: str = "lossyear"
     forest_change_collection_resolution: int = 30
 
     # ESA CCI Above Ground Biomass collection
@@ -45,5 +47,6 @@ class Settings(BaseSettings):
     gfw_dataset_version: str = "v20260407"
     gfw_api_url: HttpUrl = HttpUrl("https://www.globalforestwatch.org/api/data/dataset")
     gadm_path: Path = Path("data/global_adm_borders.geojson")
+    distance_export_wait_cache_path: Path = Path("data/distance_export_wait_estimates.csv")
 
     model_config = SettingsConfigDict(env_file=".env", extra="allow")

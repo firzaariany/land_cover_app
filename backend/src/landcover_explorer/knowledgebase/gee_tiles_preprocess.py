@@ -1,9 +1,12 @@
+import math
+
 import ee
 import geopandas as gpd
 from shapely.geometry import shape
 
 from landcover_explorer.settings import Settings
 
+# TODO: Clean up values import
 settings = Settings()
 
 tile_collection_resolution = settings.modis_collection_resolution
@@ -15,17 +18,29 @@ FOREST_COLOR_MAP = dict(zip(FOREST_CODES, settings.modis_forest_colors.split(","
 FOREST_TYPE_LABELS = dict(zip(FOREST_CODES, settings.modis_forest_labels.split(",")))
 
 FOREST_CHANGE_DATASET = settings.forest_change_collection_id
-FOREST_CHANGE_BAND_NAME = settings.forest_change_collection_band_name
+FOREST_CHANGE_BINARY = settings.forest_change_binary_band_name
 
 BIOMASS_BAND_NAME = settings.biomass_collection_band_name
 
 FOREST_RISK_SCORE = 3
+MAX_DISTANCE_TO_LOSS_M = 3000
+
+# Weights for compute_aggregate_risk_score — biomass and proximity to recent loss are
+# weighted equally and dominate over static forest presence, since both indicate active
+# threat rather than mere forest cover.
+AGB_RISK_WEIGHT = 0.4
+FOREST_RISK_WEIGHT = 0.2
+DISTANCE_RISK_WEIGHT = 0.4
 
 
 def load_image(
-    collection_id: str, band_name: str, select_year: int, geometry: ee.Geometry
+    collection_id: str,
+    band_name: str,
+    select_year: int,
+    geometry: ee.Geometry | None = None,
 ) -> ee.Image | None:
-    """Load a single band image for select_year from collection_id, clipped to geometry.
+    """Load a single band image for select_year from collection_id. Clipped to geometry
+    if given, otherwise left at global extent.
 
     Returns None if collection_id has no image for select_year.
     """
@@ -34,19 +49,54 @@ def load_image(
     )
     if filtered.size().getInfo() == 0:
         return None
-    return filtered.first().clip(geometry)
+    image = filtered.first()
+    return image.clip(geometry) if geometry is not None else image
 
 
-def reproject_to_reference(
-    image: ee.Image,
-    reference_image: ee.Image,
-    max_pixels: int = 1024,
+def load_forest_change_image(band_name: str, geometry: ee.Geometry | None = None) -> ee.Image:
+    """Load a single band from the Hansen Global Forest Change image. Clipped to geometry
+    if given, otherwise left at global extent."""
+    image = ee.Image(FOREST_CHANGE_DATASET).select(band_name)
+    return image.clip(geometry) if geometry is not None else image
+
+
+def loss_year_window(select_year: int) -> tuple[int, int]:
+    """Map select_year to its deterministic 5-year Hansen loss-year bucket (years since
+    2000): 2001-2005 -> (1, 5), 2006-2010 -> (6, 10), 2011-2015 -> (11, 15),
+    2016-2020 -> (16, 20), 2021-2025 -> (21, 25)."""
+    year = select_year - 2000
+    window_max = math.ceil(year / 5) * 5
+    window_min = window_max - 4
+    return window_min, window_max
+
+
+def load_recent_forest_loss(
+    select_year: int,
+    geometry: ee.Geometry | None = None,
+    forest_mask: ee.Image | None = None,
 ) -> ee.Image:
-    """Aggregate image's finer-resolution pixels with reducer and reproject to
-    reference_image's projection."""
-    return image.reduceResolution(reducer=ee.Reducer.mean(), maxPixels=max_pixels).reproject(
-        crs=reference_image.projection()
-    )
+    """Load Hansen binary forest loss masked to pixels whose loss year falls within
+    select_year's 5-year bucket (see loss_year_window). Global extent unless geometry
+    is given — pass None so the distance transform isn't truncated at a country border.
+    If forest_mask is given (e.g. assign_forest_type_risk_score's output), loss is
+    further restricted to pixels that were forest, so non-forest disturbance isn't
+    counted as forest loss."""
+    lossyear = load_forest_change_image(settings.forest_change_loss_year_band_name, geometry)
+    loss = load_forest_change_image(FOREST_CHANGE_BINARY, geometry)
+    window_min, window_max = loss_year_window(select_year)
+    year_mask = lossyear.gte(window_min).And(lossyear.lte(window_max))
+    loss = loss.updateMask(year_mask)
+    if forest_mask is not None:
+        loss = loss.updateMask(forest_mask.mask())
+    return loss
+
+
+def aggregate_for_resampling(image: ee.Image, max_pixels: int = 1024) -> ee.Image:
+    """Mark image for mean-aggregation of its finer-resolution pixels whenever it is later
+    implicitly resampled to a coarser projection — e.g. by combining with another image,
+    by reduceRegion, or by tile rendering. Does not force an eager reprojection, so each
+    caller resamples lazily at whatever scale it actually needs."""
+    return image.reduceResolution(reducer=ee.Reducer.mean(), maxPixels=max_pixels)
 
 
 def assign_forest_type_risk_score(image: ee.Image) -> ee.Image:
@@ -59,6 +109,42 @@ def assign_forest_type_risk_score(image: ee.Image) -> ee.Image:
     return image.remap(codes, risk_scores)
 
 
+def compute_distance_to_loss(
+    loss: ee.Image,
+    max_distance_m: int = MAX_DISTANCE_TO_LOSS_M,
+    geometry: ee.Geometry | None = None,
+) -> ee.Image:
+    """Compute each pixel's distance (in meters) to the nearest binary forest-loss pixel,
+    via a single fastDistanceTransform over the neighborhood implied by max_distance_m.
+    fastDistanceTransform doesn't inherit loss's footprint, so pass geometry to clip the
+    output — otherwise distances render/export beyond loss's clipped extent."""
+    neighborhood_pixels = math.ceil(max_distance_m / settings.forest_change_collection_resolution)
+    distance_m = (
+        loss.selfMask()
+        .fastDistanceTransform(neighborhood=neighborhood_pixels, units="pixels")
+        .sqrt()
+        .multiply(settings.forest_change_collection_resolution)
+        .setDefaultProjection(loss.projection())
+    )
+    return distance_m.clip(geometry) if geometry is not None else distance_m
+
+
+def assign_distance_risk_score(
+    distance_m: ee.Image, max_distance_m: int = MAX_DISTANCE_TO_LOSS_M
+) -> ee.Image:
+    """Reclassify distance-to-loss (meters) into a 0-3 risk score: <500m -> 3,
+    500-1000m -> 2, 1000-2000m -> 1, 2000-max_distance_m -> 0. Pixels farther than
+    max_distance_m are masked out."""
+    return (
+        ee.Image(0)
+        .where(distance_m.gte(1000).And(distance_m.lt(2000)), 1)
+        .where(distance_m.gte(500).And(distance_m.lt(1000)), 2)
+        .where(distance_m.lt(500), 3)
+        .updateMask(distance_m.lte(max_distance_m))
+        .setDefaultProjection(distance_m.projection())
+    )
+
+
 def assign_biomass_risk_score(image: ee.Image) -> ee.Image:
     """Map AGB values to a risk score: 0 -> 0, (0, 50] -> 1, (50, 200] -> 2,
     (200, 500] -> 3. Masked/NaN input pixels remain masked in the output."""
@@ -68,6 +154,24 @@ def assign_biomass_risk_score(image: ee.Image) -> ee.Image:
         .where(image.gt(50).And(image.lte(200)), 2)
         .where(image.gt(200).And(image.lte(500)), 3)
         .updateMask(image.mask())
+    )
+
+
+def compute_aggregate_risk_score(
+    agb_risk_score: ee.Image,
+    forest_risk_score: ee.Image,
+    distance_risk_score: ee.Image,
+) -> ee.Image:
+    """Combine the three 0-3 risk score layers into a single weighted 0-3 risk score.
+
+    Aggregate = AGB_RISK_WEIGHT*AGB + FOREST_RISK_WEIGHT*Forest + DISTANCE_RISK_WEIGHT*Distance.
+    All three inputs must already share a projection/resolution (e.g. via
+    aggregate_for_resampling), since this is a plain pixel-wise combination.
+    """
+    return (
+        agb_risk_score.multiply(AGB_RISK_WEIGHT)
+        .add(forest_risk_score.multiply(FOREST_RISK_WEIGHT))
+        .add(distance_risk_score.multiply(DISTANCE_RISK_WEIGHT))
     )
 
 

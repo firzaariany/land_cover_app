@@ -19,7 +19,7 @@ def calculate_coverage(
     iso: str,
     year: int,
     country_geometry: ee.Geometry,
-    category_mask: ee.Image,
+    forest_cover: ee.Image,
 ) -> dict:
     """
     Returns coverage statistics for a selected land cover category.
@@ -32,21 +32,25 @@ def calculate_coverage(
         Year of the land cover image.
     country_geometry : ee.Geometry
         Country boundary used for area reduction.
-    category_mask : ee.Image
-        Binary masked EE image (1 = category present, masked elsewhere).
+    forest_cover : ee.Image
+        Masked EE image (unmasked = category present, masked elsewhere). Pixel
+        values are ignored — coverage is derived from counting unmasked pixels,
+        not summing pixel values, since values like a constant risk score are
+        not area weights.
 
     Returns
     -------
     dict with keys: iso, year, category_area_ha, land_area_ha, coverage_pct
     """
 
+    pixel_area_m2 = REDUCTION_SCALE**2
+
     if iso in _land_area_cache:
-        # Land area already known — single GEE call for category area only.
-        category_area_m2 = (
-            category_mask
-            .multiply(ee.Image.pixelArea())
+        # Land area already known — single GEE call for category pixel count only.
+        category_pixel_count = (
+            forest_cover
             .reduceRegion(
-                reducer=ee.Reducer.sum(),
+                reducer=ee.Reducer.count(),
                 geometry=country_geometry,
                 scale=REDUCTION_SCALE,
                 maxPixels=1e9,
@@ -58,19 +62,21 @@ def calculate_coverage(
     else:
         # First visit for this country — combine both into one round trip.
         combined = ee.Image.cat([
-            category_mask.multiply(ee.Image.pixelArea()).rename("category_area"),
-            ee.Image.pixelArea().rename("land_area"),
+            forest_cover.rename("category_pixels"),
+            ee.Image(1).rename("land_pixels"),
         ])
-        
+
         result = combined.reduceRegion(
-            reducer=ee.Reducer.sum(),
+            reducer=ee.Reducer.count(),
             geometry=country_geometry,
             scale=REDUCTION_SCALE,
             maxPixels=1e9,
         ).getInfo()
-        category_area_m2 = result["category_area"]
-        land_area_m2 = result["land_area"]
+        category_pixel_count = result["category_pixels"]
+        land_area_m2 = result["land_pixels"] * pixel_area_m2
         _land_area_cache[iso] = land_area_m2
+
+    category_area_m2 = category_pixel_count * pixel_area_m2
 
     category_area_ha = category_area_m2 / 10_000
     land_area_ha = land_area_m2 / 10_000
