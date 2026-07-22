@@ -19,6 +19,8 @@ data/test_nb.ipynb
 modules/__pycache__
 GIS_viz.ipynb
 
+*.ipynb
+
 # Environments
 .venv
 .env
