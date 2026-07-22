@@ -3,6 +3,7 @@
 ## Prerequisites
 
 You will need the following installed:
+
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - [docker](https://www.docker.com/) (Optional, for building and running `docker compose`)
 
@@ -10,49 +11,61 @@ You will need the following installed:
 
 1. Install the dependencies:
 
-    ```bash
-    scripts/install
-    ```
+   ```bash
+   scripts/install
+   ```
 
-2. Install dependencies
-```
-conda env create -f environment.yml
-```
+2. Copy `.env.example` to `.env` and fill in the values:
 
-3. Create Cloud-Optimized GeoTiff (COG) for selected countries
-- Initialised directory creations for COG by running the script in `data/__init__.py`
-- Download global administration border from [GADM](https://gadm.org/) by running the script in `data/download_gadm.py`
-- Selected countries are `["MYS", "CRI", "NZL", "NOR", "IDN"]`. This will create a shapefile titled `data/global_adm_borders.shp` and other vector-like formats, as well as create a geojson file titled `data/global_adm_borders.geojson`.
-- Download land cover rasters for selected countries from [Copernicus Climate Data Store](https://cds.climate.copernicus.eu/datasets/satellite-land-cover?tab=overview) by running the script in `data/download_land_cover.py`. This will create directories for each selected countries, in which lays the zip files for land cover rasters from 2005 - 2020.
-- Unzip the land cover rasters, and consolidate the individual layers for 2005 - 2020 as one xarray dataset by running the script in `data/master_land_cover.py`. This will create .nc file titled `data/{country}/{country}_master_land_cover.nc` for each selected country. Each .nc file consists of five land cover variables and latitude, longitude, and time dimensions. 
-- Re-classify the redundant land cover classification into more general classification and create COG for each land cover variable, time selection, and each country. The script is now only creating COG for forest and agriculture for the year 2005, 2010, 2015, 2020. Doing this by running the script in `data/reclassify_land_cover_COG.py`. This will return COG files in the directory `data/COG/{country}/{country}_{land_variable}_{year}.tiff`
+   ```bash
+   cp .env.example .env
+   ```
 
-4. Start the Titiler server locally to serve COG rasters
-```
-uvicorn main:app --reload --port 8001
-```
+   This includes your Google Earth Engine service account credentials, the Earth Engine collections used (MODIS land cover, Hansen Global Forest Change, ESA CCI biomass), and your Global Forest Watch API credentials.
 
-5. Run the Shiny app
-```
-shiny run --reload modules/app.py
-```
+3. Prepare the distance-risk-score assets by running:
 
-### Usage 
-- Select the year from the UI input to update the forest raster layers.
-- The map will overlay raster tiles from the local Titiler server for all selected countries.
-- Select the country to re-center the view and become the focus of the raster view.
+   ```bash
+   scripts/export-distance-risk-assets
+   ```
+
+   This precomputes, for every supported country and forest-loss-year window, a raster of distance-to-forest-loss risk scores, and exports each one as an asset to your Earth Engine account. It runs against the GEE backend, so each export consumes your Earth Engine compute credits/quota — the script skips any asset that already exists, so it's safe to re-run and only pays for what's missing.
+
+4. Start the Shiny app:
+
+   ```bash
+   scripts/shiny
+   ```
+
+### Usage
+
+- Select a country from the drop-down and a year from the slider to update the map, the border re-centers on the selected country and click it to see its forest coverage for that year.
+- Use the layer control to toggle between four map layers: forest cover, above-ground biomass risk, aggregate degradation risk, and the top 5 highest-risk regions (numbered badges).
+- The aggregate risk score combines the biomass risk score with the forest-type risk score and the precomputed distance-to-forest-loss risk score (from step 3 above) into a single 0-9 scale, where 0 is low risk of degradation and 9 is high risk. If the distance-risk asset hasn't been exported yet for that country/year, a warning is shown and the aggregate score falls back to forest type + biomass only.
+- The table below the map lists the top 5 country regions by highest-risk area for the selected year; the bar chart shows forest loss by driver over time for the selected country, sourced from Global Forest Watch.
 
 ## Project structure
-- `modules/app.py` - Main Shiny app server and UI code
-- `data` - Directory with all scripts to download, processed, and export COGs for selected countries, as well as to download the vector data for country borders
-- `main.py` - Titiler server backend to serve raster tiles
-- `environment.yml` - Python dependencies
 
-## Notes
-- Ensure the Titiler server is running before launching the Shiny app.
-- Raster files must be accessible by the Titiler server with correct file paths (will be ensured if you run `__init__.py`, `data/download_land_cover.py`, `data/master_land_cover.py`, then `data/reclassify_land_cover_COG.py` in correct order).
-- This app is designed for local use and development; adapt paths and hosting for production.
+```
+backend/
+├── data/
+│   └── global_adm_borders.geojson   # Global administration boundaries for supported countries
+├── scripts/
+│   ├── install                      # Installs dependencies (uv sync)
+│   ├── export-distance-risk-assets  # Precomputes distance-risk-score assets to Earth Engine
+│   └── shiny                        # Launches the Shiny app
+├── src/landcover_explorer/
+│   ├── knowledgebase/                # Earth Engine & GFW preprocessing, land cover / biomass / degradation-risk stats
+│   ├── settings/                     # App configuration, loaded from .env
+│   └── shiny/
+│       ├── app.py                    # Main Shiny app server and UI code
+│       └── app_helpers.py            # Helper functions for the Shiny app
+├── .env.example                      # Template for environment variables
+└── pyproject.toml                    # Python dependencies
+```
 
 ## Contact
-Firza Riany (GIS Data Scientis)
-firzariany2@gmail.com
+
+Firza Riany (Geospatial Data Engineer)
+Personal: firzariany2@gmail.com
+Professional: firza@developmentseed.org

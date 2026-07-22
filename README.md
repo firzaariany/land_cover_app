@@ -1,66 +1,74 @@
 # Land Cover Visualization App
-An interactive Shiny app to visualize land cover rasters over selected countries using Titiler for on-the-fly Cloud-Optimized GeoTiff (COG) tile serving. 
+
+Land Cover Explorer is an interactive app for understanding which areas are at high risk of forest degradation. Degradation is inferred from two signals: a forest with low above-ground biomass at a given point in time, and its proximity to recent forest loss (distance to forest loss is precomputed in Google Earth Engine). This app is still under development.
+
+Country coverage:
+
+- Malaysia (MYS)
+- Costa Rica (CRI)
+- Norway (NOR)
+- Indonesia (IDN)
+- Democratic Republic of the Congo (COD)
+- Japan (JPN)
 
 ## Features
-- Interactive map displaying land cover rasters over multiple countries.
-- Dynamic raster layer updates based on user-selectd year.
-- Raster tiles served via a locally running Titiler server
-- Country borders displayed as vector overlays
+
+- Interactive map with selectable country and year, recentering and zooming to the selected country's border.
+- Forest cover, above-ground biomass risk, and aggregate degradation risk layers, rendered as tiles served directly from Google Earth Engine.
+- Aggregate risk score combines forest type, biomass, and (where precomputed) distance-to-forest-loss into a single risk layer.
+- Top 5 highest-risk regions highlighted on the map with rank badges, plus a matching ranked data table.
+- Click-to-view popup showing forest cover percentage for the selected country/year.
+- Forest loss by driver chart (stacked bar) sourced from Global Forest Watch data.
+
+## Data sources
+
+- [MODIS Land Cover Type (MCD12Q1)](https://developers.google.com/earth-engine/datasets/catalog/MODIS_061_MCD12Q1) - forest cover and forest subtype classification.
+- [Hansen Global Forest Change](https://developers.google.com/earth-engine/datasets/catalog/UMD_hansen_global_forest_change_2024_v1_12) - forest loss extent and loss year, used to derive distance to forest loss.
+- [ESA CCI Above-Ground Biomass](https://developers.google.com/earth-engine/datasets/catalog/ESA_CCI_AboveGroundBiomass_V6_0) - above-ground biomass (Mg/ha) used for biomass risk scoring.
+- [GADM](https://gadm.org/) - global administrative boundaries for country and region borders.
+- [Global Forest Watch API](https://www.globalforestwatch.org/) - forest loss by driver statistics.
+
+All Earth Engine datasets are accessed live via a Google Earth Engine service account; dataset IDs and credentials are configured in `backend/.env.example`.
 
 ## Getting started
-### Prerequisites
-- Python 3.8+
-- [Shiny for Python](https://shiny.posit.co/py/get-started/)
-- [Ipyleaflet](https://ipyleaflet.readthedocs.io/en/latest/installation/index.html), embedded in Shiny
-- [Titiler](https://developmentseed.org/titiler/) installed and running locally 
-- Cloud-Optimized GeoTiff (COG) raster files stored locally
 
-### Installation
 1. Clone this repository
+
 ```
 git clone https://github.com/firzaariany/land_cover_app.git
 cd land_cover_app
 ```
 
-2. Install dependencies
-```
-conda env create -f environment.yml
-```
-
-3. Create Cloud-Optimized GeoTiff (COG) for selected countries
-- Initialised directory creations for COG by running the script in `data/__init__.py`
-- Download global administration border from [GADM](https://gadm.org/) by running the script in `data/download_gadm.py`
-- Selected countries are `["MYS", "CRI", "NZL", "NOR", "IDN"]`. This will create a shapefile titled `data/global_adm_borders.shp` and other vector-like formats, as well as create a geojson file titled `data/global_adm_borders.geojson`.
-- Download land cover rasters for selected countries from [Copernicus Climate Data Store](https://cds.climate.copernicus.eu/datasets/satellite-land-cover?tab=overview) by running the script in `data/download_land_cover.py`. This will create directories for each selected countries, in which lays the zip files for land cover rasters from 2005 - 2020.
-- Unzip the land cover rasters, and consolidate the individual layers for 2005 - 2020 as one xarray dataset by running the script in `data/master_land_cover.py`. This will create .nc file titled `data/{country}/{country}_master_land_cover.nc` for each selected country. Each .nc file consists of five land cover variables and latitude, longitude, and time dimensions. 
-- Re-classify the redundant land cover classification into more general classification and create COG for each land cover variable, time selection, and each country. The script is now only creating COG for forest and agriculture for the year 2005, 2010, 2015, 2020. Doing this by running the script in `data/reclassify_land_cover_COG.py`. This will return COG files in the directory `data/COG/{country}/{country}_{land_variable}_{year}.tiff`
-
-4. Start the Titiler server locally to serve COG rasters
-```
-uvicorn main:app --reload --port 8001
-```
-
-5. Run the Shiny app
-```
-shiny run --reload modules/app.py
-```
-
-### Usage 
-- Select the year from the UI input to update the forest raster layers.
-- The map will overlay raster tiles from the local Titiler server for all selected countries.
-- Select the country to re-center the view and become the focus of the raster view.
+2. All app code lives in `backend/` — see [backend/README.md](backend/README.md) for prerequisites, installation, and usage.
 
 ## Project structure
-- `modules/app.py` - Main Shiny app server and UI code
-- `data` - Directory with all scripts to download, processed, and export COGs for selected countries, as well as to download the vector data for country borders
-- `main.py` - Titiler server backend to serve raster tiles
-- `environment.yml` - Python dependencies
+
+```
+land_cover_app/backend/
+├── data/
+│   └── global_adm_borders.geojson   # Global administration boundaries for supported countries
+├── scripts/
+│   ├── install                      # Installs dependencies (uv sync)
+│   ├── export-distance-risk-assets  # Precomputes distance-risk-score assets to Earth Engine
+│   └── shiny                        # Launches the Shiny app
+├── src/landcover_explorer/
+│   ├── knowledgebase/                # Earth Engine & GFW preprocessing, land cover / biomass / degradation-risk stats
+│   ├── settings/                     # App configuration, loaded from .env
+│   └── shiny/
+│       ├── app.py                    # Main Shiny app server and UI code
+│       └── app_helpers.py            # Helper functions for the Shiny app
+├── .env.example                      # Template for environment variables
+└── pyproject.toml                    # Python dependencies
+```
 
 ## Notes
-- Ensure the Titiler server is running before launching the Shiny app.
-- Raster files must be accessible by the Titiler server with correct file paths (will be ensured if you run `__init__.py`, `data/download_land_cover.py`, `data/master_land_cover.py`, then `data/reclassify_land_cover_COG.py` in correct order).
+
+- This app is still under development.
+- The aggregate risk score falls back to forest type + biomass only if the distance-to-forest-loss asset hasn't been exported yet for a given country/year.
 - This app is designed for local use and development; adapt paths and hosting for production.
 
 ## Contact
-Firza Riany (GIS Data Scientis)
-firzariany2@gmail.com
+
+Firza Riany (Geospatial Data Engineer)
+Personal: firzariany2@gmail.com
+Professional: firza@developmentseed.org
