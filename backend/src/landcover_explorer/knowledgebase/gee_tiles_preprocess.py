@@ -160,18 +160,31 @@ def assign_biomass_risk_score(image: ee.Image) -> ee.Image:
 def compute_aggregate_risk_score(
     agb_risk_score: ee.Image,
     forest_risk_score: ee.Image,
-    distance_risk_score: ee.Image,
+    distance_risk_score: ee.Image | None,
 ) -> ee.Image:
-    """Combine the three 0-3 risk score layers into a single weighted 0-3 risk score.
+    """Combine the 0-3 risk score layers into a single weighted 0-3 risk score.
 
     Aggregate = AGB_RISK_WEIGHT*AGB + FOREST_RISK_WEIGHT*Forest + DISTANCE_RISK_WEIGHT*Distance.
-    All three inputs must already share a projection/resolution (e.g. via
+    All inputs must already share a projection/resolution (e.g. via
     aggregate_for_resampling), since this is a plain pixel-wise combination.
+
+    Pass distance_risk_score=None when it isn't available yet (e.g. its asset hasn't
+    been exported — see distance_risk_assets.py) rather than substituting a 0 image:
+    a 0 contribution still caps the weighted sum below 3 (0.4*3 + 0.2*3 = 1.8), so
+    round(aggregate) would never reach the max risk score. Instead, the remaining
+    weights are renormalized so the same 0-3 scale — and thus any MAX_RISK_SCORE-based
+    thresholding downstream (see risk_stats.py) — still holds.
     """
-    return (
-        agb_risk_score.multiply(AGB_RISK_WEIGHT)
-        .add(forest_risk_score.multiply(FOREST_RISK_WEIGHT))
-        .add(distance_risk_score.multiply(DISTANCE_RISK_WEIGHT))
+    if distance_risk_score is not None:
+        return (
+            agb_risk_score.multiply(AGB_RISK_WEIGHT)
+            .add(forest_risk_score.multiply(FOREST_RISK_WEIGHT))
+            .add(distance_risk_score.multiply(DISTANCE_RISK_WEIGHT))
+        )
+
+    active_weight_total = AGB_RISK_WEIGHT + FOREST_RISK_WEIGHT
+    return agb_risk_score.multiply(AGB_RISK_WEIGHT / active_weight_total).add(
+        forest_risk_score.multiply(FOREST_RISK_WEIGHT / active_weight_total)
     )
 
 
