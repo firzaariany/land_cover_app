@@ -11,6 +11,7 @@ from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
     load_image,
     aggregate_for_resampling,
 )
+from landcover_explorer.knowledgebase.distance_risk_assets import load_distance_risk_score
 from landcover_explorer.knowledgebase.gfw_preprocess import fetch_forest_loss_by_driver
 from landcover_explorer.knowledgebase.land_cover_stats import calculate_coverage
 from landcover_explorer.knowledgebase.risk_stats import (
@@ -21,10 +22,11 @@ from landcover_explorer.knowledgebase.risk_stats import (
 )
 from landcover_explorer.shiny.app_helpers import (
     error_fig,
-    forest_cover_legend_choice,
     get_ee_geometry,
     get_iso_feature,
     style_bar_fig,
+    top5_ranking_dataframe,
+    year_slider_with_ticks,
 )
 
 import asyncio
@@ -33,7 +35,10 @@ import json
 import math
 import plotly.express as px
 from ipyleaflet import (
+    DivIcon,
+    LayerGroup,
     Map,
+    Marker,
     TileLayer,
     LayersControl,
     GeoJSON,
@@ -41,7 +46,8 @@ from ipyleaflet import (
 )
 from ipywidgets import HTML
 from pathlib import Path
-from shiny import App, ui, reactive
+from shapely.geometry import shape
+from shiny import App, ui, reactive, render
 from shinywidgets import output_widget, register_widget, render_widget
 
 # -----------------
@@ -60,9 +66,19 @@ COUNTRY_NAMES = {
     "MYS": "Malaysia",
     "CRI": "Costa Rica",
     "NOR": "Norway",
-    "NZL": "New Zealand",
     "IDN": "Indonesia",
+    "COD": "Democratic Republic of the Congo",
+    "JPN": "Japan",
 }
+
+MIN_YEAR = 2005
+MAX_YEAR = 2025
+DEFAULT_YEAR = 2020
+
+FOREST_LAYER_NAME = "Forest cover"
+BIOMASS_LAYER_NAME = "Above-ground biomass risk"
+AGGREGATE_LAYER_NAME = "Aggregate risk score"
+TOP5_LAYER_NAME = "Top 5 highest-risk regions"
 
 # -----------------
 # DATA PREPARATION
@@ -87,22 +103,8 @@ app_ui = ui.page_sidebar(
             COUNTRY_NAMES,
             selected="MYS",
         ),
-        ui.input_slider(
-            "year",
-            "Select a year",
-            min=2005,
-            max=2025,
-            value=2020,
-            sep="",
-        ),
-        ui.input_dark_mode(mode="dark"),
-        ui.hr(),
-        ui.p("Map layers", style="font-weight:bold; margin-bottom:4px;"),
-        ui.input_checkbox_group(
-            "visible_layers",
-            None,
-            choices=forest_cover_legend_choice(2005),
-            selected=["forest", "biomass", "aggregate"],
+        year_slider_with_ticks(
+            min_year=MIN_YEAR, max_year=MAX_YEAR, value=DEFAULT_YEAR, tick_step=5
         ),
     ),
     ui.card(
@@ -110,11 +112,19 @@ app_ui = ui.page_sidebar(
         height="500px",
         fillable=True,
     ),
-    ui.card(
-        output_widget("forest_area_plot"),
-        title="Forest loss by driver",
-        height="400px",
-        fillable=True,
+    ui.layout_columns(
+        ui.card(
+            ui.card_header(ui.output_text("top5_header")),
+            ui.output_data_frame("top5_infobox"),
+            height="400px",
+            fillable=True,
+        ),
+        ui.card(
+            ui.card_header(ui.output_text("forest_loss_header")),
+            output_widget("forest_area_plot"),
+            height="400px",
+            fillable=True,
+        ),
     ),
     title="Explore Forest",
     fillable=True,
@@ -127,10 +137,11 @@ app_ui = ui.page_sidebar(
 
 def server(input, output, session):
     m = Map()
-    m.add_control(LayersControl())
+    m.add_control(LayersControl(collapsed=False))
     register_widget("map", m)
 
     _forest_layer_cache: dict = {}
+    top5_dataframe_state = reactive.Value(top5_ranking_dataframe(None))
 
     border_layer = GeoJSON(
         data={"type": "FeatureCollection", "features": []},
@@ -165,32 +176,6 @@ def server(input, output, session):
     @reactive.calc
     def selected_year():
         return input.year()
-
-    @reactive.effect
-    def refresh_forest_legend_label():
-        ui.update_checkbox_group(
-            "visible_layers",
-            choices=forest_cover_legend_choice(selected_year()),
-            selected=input.visible_layers(),
-        )
-
-    def apply_forest_layer_visibility():
-        try:
-            visible = set(input.visible_layers())
-        except Exception:
-            return
-        for layer in m.layers:
-            name = getattr(layer, "name", "")
-            if name.startswith("Forest_"):
-                layer.opacity = 0.7 if "forest" in visible else 0
-            elif name.startswith("Biomass_"):
-                layer.opacity = 0.7 if "biomass" in visible else 0
-            elif name.startswith("Aggregate_"):
-                layer.opacity = 0.7 if "aggregate" in visible else 0
-
-    @reactive.effect
-    def update_forest_layer_visibility():
-        apply_forest_layer_visibility()
 
     @reactive.effect
     async def load_forest_cover_layer():
@@ -248,13 +233,11 @@ def server(input, output, session):
                     and biomass_risk_score is not None
                     and iso in ISO_TO_ADM0_NAME
                 ):
-                    # Distance-to-loss risk is left out until the on-demand export/wait
-                    # UX (see distance_risk_assets.py) is wired in — a neutral 0
-                    # contribution means AGB and forest presence alone drive this
-                    # aggregate score for now.
-                    distance_risk_placeholder = ee.Image(0)
+                    distance_risk_score = load_distance_risk_score(iso, year)
+                    distance_asset_missing = distance_risk_score is None
+
                     aggregate_risk_score = compute_aggregate_risk_score(
-                        biomass_risk_score, forest_risk_score, distance_risk_placeholder
+                        biomass_risk_score, forest_risk_score, distance_risk_score
                     )
                     aggregate_map_id = aggregate_risk_score.getMapId({
                         "min": 0,
@@ -270,6 +253,8 @@ def server(input, output, session):
                         "tile_url": aggregate_map_id["tile_fetcher"].url_format,
                         "top5_tile_url": top5_map_id["tile_fetcher"].url_format,
                         "top5_ranking": top5_ranking,
+                        "top5_dataframe": top5_ranking_dataframe(top5_ranking),
+                        "distance_asset_missing": distance_asset_missing,
                     }
 
                 return {
@@ -279,28 +264,76 @@ def server(input, output, session):
                     "aggregate_tile_url": aggregate_result["tile_url"] if aggregate_result else None,
                     "top5_tile_url": aggregate_result["top5_tile_url"] if aggregate_result else None,
                     "top5_ranking": aggregate_result["top5_ranking"] if aggregate_result else None,
+                    "top5_dataframe": (
+                        aggregate_result["top5_dataframe"]
+                        if aggregate_result
+                        else top5_ranking_dataframe(None)
+                    ),
+                    "distance_asset_missing": (
+                        aggregate_result["distance_asset_missing"] if aggregate_result else None
+                    ),
                 }
 
             _forest_layer_cache[cache_key] = await asyncio.to_thread(get_forest_cover_layer_data)
 
         layer_data = _forest_layer_cache[cache_key]
 
-        for layer in list(m.layers):
-            if layer.name.startswith(("Forest_", "Biomass_", "Aggregate_")):
-                m.remove_layer(layer)
+        kept_layers = [
+            layer
+            for layer in m.layers
+            if layer.name
+            not in (FOREST_LAYER_NAME, BIOMASS_LAYER_NAME, AGGREGATE_LAYER_NAME, TOP5_LAYER_NAME)
+        ]
+        new_layers = []
         if layer_data["forest_tile_url"]:
-            m.add_layer(TileLayer(
-                url=layer_data["forest_tile_url"], name=f"Forest_{iso}_{year}", opacity=0.7
+            new_layers.append(TileLayer(
+                url=layer_data["forest_tile_url"], name=FOREST_LAYER_NAME, opacity=0.7
             ))
         if layer_data["biomass_tile_url"]:
-            m.add_layer(TileLayer(
-                url=layer_data["biomass_tile_url"], name=f"Biomass_{iso}_{year}", opacity=0.7
+            new_layers.append(TileLayer(
+                url=layer_data["biomass_tile_url"], name=BIOMASS_LAYER_NAME, opacity=0.7
             ))
         if layer_data["aggregate_tile_url"]:
-            m.add_layer(TileLayer(
-                url=layer_data["aggregate_tile_url"], name=f"Aggregate_{iso}_{year}", opacity=0.7
+            new_layers.append(TileLayer(
+                url=layer_data["aggregate_tile_url"], name=AGGREGATE_LAYER_NAME, opacity=0.7
             ))
-        apply_forest_layer_visibility()
+        top5_sublayers = []
+        if layer_data["top5_tile_url"]:
+            top5_sublayers.append(TileLayer(url=layer_data["top5_tile_url"], opacity=1))
+        if layer_data["top5_ranking"]:
+            badge_reset_style = (
+                "<style>.leaflet-div-icon { background: transparent; border: none; }</style>"
+            )
+            for rank, region in enumerate(layer_data["top5_ranking"], start=1):
+                centroid = shape(region["geometry"]).centroid
+                badge_icon = DivIcon(
+                    html=(
+                        badge_reset_style +
+                        f'<div style="font-size:14px; font-weight:bold; color:white; '
+                        f'background:#d6006d; border:2px solid white; border-radius:50%; '
+                        f'width:24px; height:24px; display:flex; align-items:center; '
+                        f'justify-content:center;">{rank}</div>'
+                    ),
+                    icon_size=[24, 24],
+                    icon_anchor=[12, 12],
+                )
+                top5_sublayers.append(Marker(
+                    location=(centroid.y, centroid.x),
+                    icon=badge_icon,
+                    draggable=False,
+                ))
+        if top5_sublayers:
+            new_layers.append(LayerGroup(layers=top5_sublayers, name=TOP5_LAYER_NAME))
+        m.layers = tuple(kept_layers + new_layers)
+        if layer_data["distance_asset_missing"]:
+            ui.notification_show(
+                "Distance-to-loss risk hasn't been precomputed for this country/year "
+                "yet — the aggregate risk score shown is based on forest type and "
+                "biomass only.",
+                type="warning",
+                duration=8,
+            )
+        top5_dataframe_state.set(layer_data["top5_dataframe"])
 
         coverage_text = (
             f"Forest cover {year}: {layer_data['coverage']['coverage_pct']}%"
@@ -336,6 +369,21 @@ def server(input, output, session):
         m.zoom = max(2, min(10, round(math.log2(360 / span))))
         m.center = [float((min_lat + max_lat) / 2), float((min_lon + max_lon) / 2)]
 
+    @output
+    @render.text
+    def top5_header():
+        return f"Top 5 regions with highest degradation risk ({selected_year()})"
+
+    @output
+    @render.text
+    def forest_loss_header():
+        return f"Forest loss by driver ({selected_year()})"
+
+    @output
+    @render.data_frame
+    def top5_infobox():
+        return render.DataGrid(top5_dataframe_state(), width="100%")
+
     @reactive.calc
     def gfw_forest_loss():
         return fetch_forest_loss_by_driver(selected_iso())
@@ -343,8 +391,6 @@ def server(input, output, session):
     @output
     @render_widget
     def forest_area_plot():
-        sel_iso = selected_iso()
-
         try:
             df = gfw_forest_loss()
 
@@ -362,8 +408,7 @@ def server(input, output, session):
                 color="Driver",
                 barmode="stack",
                 opacity=0.8,
-                title=f"Forest Loss in {COUNTRY_NAMES.get(sel_iso, sel_iso)}",
-                template="plotly_dark",
+                template="plotly_white",
                 height=300,
             )
             return style_bar_fig(fig)
