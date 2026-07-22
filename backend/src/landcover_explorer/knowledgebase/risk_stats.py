@@ -21,8 +21,9 @@ ISO_TO_ADM0_NAME = {
     "MYS": "Malaysia",
     "CRI": "Costa Rica",
     "NOR": "Norway",
-    "NZL": "New Zealand",
     "IDN": "Indonesia",
+    "COD": "Democratic Republic of the Congo",
+    "JPN": "Japan",
 }
 
 MAX_RISK_SCORE = 3
@@ -111,12 +112,7 @@ def top_n_admin1_collection_by_risk3_area(
 
 
 def build_highlight_image(collection: ee.FeatureCollection, color: str = "ff00ff") -> ee.Image:
-    """Semi-transparent fill + solid outline over collection's features, so they stand
-    out against the admin1 boundary/risk layers underneath (e.g. top-5 highest-risk
-    regions)."""
-    fill = ee.Image().byte().paint(featureCollection=collection, color=1)
+    """Solid outline over collection's features, so they stand out against the admin1
+    boundary/risk layers underneath (e.g. top-5 highest-risk regions)."""
     outline = ee.Image().byte().paint(featureCollection=collection, color=1, width=4)
-    return ee.ImageCollection([
-        fill.visualize(palette=[color], opacity=0.25),
-        outline.visualize(palette=[color]),
-    ]).mosaic()
+    return outline.visualize(palette=[color])
