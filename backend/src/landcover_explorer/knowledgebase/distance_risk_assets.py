@@ -27,10 +27,10 @@ settings = Settings()
 ASSET_DESCRIPTION_PREFIX = "distance_risk_score"
 DEFAULT_EXPORT_WAIT_SECONDS = 300.0  # fallback estimate when no export history exists yet
 
-# Wait-time estimates are cached per iso here since querying EE operation history is a
-# one-off cost per country, not something every request should pay for.
+# Wait-time estimates are cached per (iso, loss window) here since querying EE operation
+# history is a one-off cost per country/window pair, not something every request should pay for.
 EXPORT_WAIT_CACHE_PATH = Path(__file__).parents[3] / settings.distance_export_wait_cache_path
-_EXPORT_WAIT_CACHE_FIELDS = ["iso", "estimated_wait_seconds", "computed_at"]
+_EXPORT_WAIT_CACHE_FIELDS = ["iso", "window_min", "window_max", "estimated_wait_seconds", "computed_at"]
 
 # Every select_year in 2001-2025 falls into one of these 5 fixed windows (see
 # loss_year_window) — this is the full set of assets export_distance_risk_assets.py
@@ -70,16 +70,21 @@ def _parse_timestamp(value: str | None) -> datetime | None:
 
 
 def estimate_export_wait_seconds(
-    iso: str, default: float = DEFAULT_EXPORT_WAIT_SECONDS
+    iso: str,
+    window_min: int,
+    window_max: int,
+    default: float = DEFAULT_EXPORT_WAIT_SECONDS,
 ) -> float:
     """Average wall-clock duration of past successful distance risk score exports for
-    iso, from this account's EE operation history. Falls back to `default` if there's
-    no prior export for iso to learn from (e.g. first-ever run for that country).
+    iso's [window_min, window_max] loss-year window, from this account's EE operation
+    history. Falls back to `default` if there's no prior export for that (iso, window)
+    pair to learn from (e.g. first-ever run for that country/window).
 
-    This is the expensive, uncached calculation — prefer get_export_wait_seconds(iso),
-    which only calls this once per country and reuses the CSV-cached result after that.
+    This is the expensive, uncached calculation — prefer
+    get_export_wait_seconds(iso, window_min, window_max), which only calls this once
+    per (iso, window) pair and reuses the CSV-cached result after that.
     """
-    description_prefix = f"{ASSET_DESCRIPTION_PREFIX}_{iso}_"
+    description_prefix = f"{ASSET_DESCRIPTION_PREFIX}_{iso}_{window_min}_{window_max}"
     durations = []
     for operation in ee.data.listOperations():
         metadata = operation.get("metadata", {})
@@ -100,14 +105,20 @@ def estimate_export_wait_seconds(
     return sum(durations) / len(durations)
 
 
-def _read_export_wait_cache() -> dict[str, float]:
+def _read_export_wait_cache() -> dict[tuple[str, int, int], float]:
     if not EXPORT_WAIT_CACHE_PATH.exists():
         return {}
     with open(EXPORT_WAIT_CACHE_PATH, newline="") as f:
-        return {row["iso"]: float(row["estimated_wait_seconds"]) for row in csv.DictReader(f)}
+        return {
+            (row["iso"], int(row["window_min"]), int(row["window_max"])):
+                float(row["estimated_wait_seconds"])
+            for row in csv.DictReader(f)
+        }
 
 
-def _append_export_wait_cache(iso: str, wait_seconds: float) -> None:
+def _append_export_wait_cache(
+    iso: str, window_min: int, window_max: int, wait_seconds: float
+) -> None:
     EXPORT_WAIT_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     is_new_file = not EXPORT_WAIT_CACHE_PATH.exists()
     with open(EXPORT_WAIT_CACHE_PATH, "a", newline="") as f:
@@ -116,23 +127,26 @@ def _append_export_wait_cache(iso: str, wait_seconds: float) -> None:
             writer.writeheader()
         writer.writerow({
             "iso": iso,
+            "window_min": window_min,
+            "window_max": window_max,
             "estimated_wait_seconds": round(wait_seconds, 1),
             "computed_at": datetime.now(timezone.utc).isoformat(),
         })
 
 
-def get_export_wait_seconds(iso: str) -> float:
-    """Estimated export wait time for iso, cached in EXPORT_WAIT_CACHE_PATH so the EE
-    operation history only gets queried once per country. Every call after the first
-    for a given iso is a plain CSV read — call this rather than
-    estimate_export_wait_seconds directly.
+def get_export_wait_seconds(iso: str, window_min: int, window_max: int) -> float:
+    """Estimated export wait time for iso's [window_min, window_max] loss-year window,
+    cached in EXPORT_WAIT_CACHE_PATH so the EE operation history only gets queried once
+    per (iso, window) pair. Every call after the first for a given pair is a plain CSV
+    read — call this rather than estimate_export_wait_seconds directly.
     """
     cached = _read_export_wait_cache()
-    if iso in cached:
-        return cached[iso]
+    key = (iso, window_min, window_max)
+    if key in cached:
+        return cached[key]
 
-    wait_seconds = estimate_export_wait_seconds(iso)
-    _append_export_wait_cache(iso, wait_seconds)
+    wait_seconds = estimate_export_wait_seconds(iso, window_min, window_max)
+    _append_export_wait_cache(iso, window_min, window_max, wait_seconds)
     return wait_seconds
 
 

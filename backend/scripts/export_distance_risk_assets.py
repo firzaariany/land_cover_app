@@ -17,6 +17,7 @@ from landcover_explorer.knowledgebase.distance_risk_assets import (
     LOSS_WINDOWS,
     distance_asset_exists,
     get_distance_asset_id,
+    get_export_wait_seconds,
     start_distance_risk_export,
 )
 from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
@@ -71,8 +72,12 @@ def main():
                 continue
             forest_mask = assign_forest_type_risk_score(forest_dataset)
 
+            wait_seconds = get_export_wait_seconds(iso, window_min, window_max)
             task = start_distance_risk_export(iso, select_year, geometry, forest_mask)
-            print(f"[export] {iso} {window_min}-{window_max}: started task {task.id}")
+            print(
+                f"[export] {iso} {window_min}-{window_max}: started task {task.id} "
+                f"(est. wait ~{wait_seconds:.0f}s)"
+            )
             pending.append((iso, window_min, window_max, task))
 
     if not pending:
