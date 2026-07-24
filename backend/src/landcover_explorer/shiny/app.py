@@ -21,6 +21,7 @@ from landcover_explorer.knowledgebase.risk_stats import (
     top_n_admin1_collection_by_risk3_area,
 )
 from landcover_explorer.shiny.app_helpers import (
+    compute_top5_dataframe_for_year,
     error_fig,
     get_ee_geometry,
     get_iso_feature,
@@ -107,26 +108,59 @@ app_ui = ui.page_sidebar(
             min_year=MIN_YEAR, max_year=MAX_YEAR, value=DEFAULT_YEAR, tick_step=5
         ),
     ),
-    ui.card(
-        output_widget("map"),
-        height="500px",
-        fillable=True,
-    ),
-    ui.layout_columns(
-        ui.card(
-            ui.card_header(ui.output_text("top5_header")),
-            ui.output_data_frame("top5_infobox"),
-            height="400px",
-            fillable=True,
+    ui.navset_tab(
+        ui.nav_panel(
+            "Explore Forest",
+            ui.card(
+                output_widget("map"),
+                height="500px",
+                fillable=True,
+            ),
+            ui.layout_columns(
+                ui.card(
+                    ui.card_header(ui.output_text("top5_header")),
+                    ui.output_data_frame("top5_infobox"),
+                    height="400px",
+                    fillable=True,
+                ),
+                ui.card(
+                    ui.card_header(ui.output_text("forest_loss_header")),
+                    output_widget("forest_area_plot"),
+                    height="400px",
+                    fillable=True,
+                ),
+            ),
         ),
-        ui.card(
-            ui.card_header(ui.output_text("forest_loss_header")),
-            output_widget("forest_area_plot"),
-            height="400px",
-            fillable=True,
+        ui.nav_panel(
+            "Compare Years",
+            ui.layout_columns(
+                ui.card(
+                    ui.card_header(ui.output_text("top5_header_compare_page")),
+                    ui.input_select(
+                        "top5_compare_page_year",
+                        "Year",
+                        choices=[str(y) for y in range(MIN_YEAR, MAX_YEAR + 1)],
+                        selected=str(DEFAULT_YEAR),
+                    ),
+                    ui.output_data_frame("top5_infobox_compare_page"),
+                    height="400px",
+                    fillable=True,
+                ),
+                ui.card(
+                    ui.card_header(ui.output_text("compare_top5_header")),
+                    ui.input_select(
+                        "compare_year",
+                        "Compare with year",
+                        choices=[str(y) for y in range(MIN_YEAR, MAX_YEAR + 1)],
+                        selected=str(max(MIN_YEAR, DEFAULT_YEAR - 10)),
+                    ),
+                    ui.output_data_frame("compare_top5_infobox"),
+                    height="400px",
+                    fillable=True,
+                ),
+            ),
         ),
     ),
-    title="Explore Forest",
     fillable=True,
 )
 
@@ -141,7 +175,10 @@ def server(input, output, session):
     register_widget("map", m)
 
     _forest_layer_cache: dict = {}
+    _compare_top5_cache: dict = {}
     top5_dataframe_state = reactive.Value(top5_ranking_dataframe(None))
+    top5_compare_page_dataframe_state = reactive.Value(top5_ranking_dataframe(None))
+    compare_top5_dataframe_state = reactive.Value(top5_ranking_dataframe(None))
 
     border_layer = GeoJSON(
         data={"type": "FeatureCollection", "features": []},
@@ -369,10 +406,58 @@ def server(input, output, session):
         m.zoom = max(2, min(10, round(math.log2(360 / span))))
         m.center = [float((min_lat + max_lat) / 2), float((min_lon + max_lon) / 2)]
 
+    @reactive.effect
+    async def load_top5_compare_page():
+        iso = selected_iso()
+        year = int(input.top5_compare_page_year())
+
+        cache_key = (iso, year)
+        if cache_key not in _compare_top5_cache:
+            ee_geometry = get_ee_geometry(data, iso)
+            _compare_top5_cache[cache_key] = await asyncio.to_thread(
+                compute_top5_dataframe_for_year, iso, year, ee_geometry
+            )
+
+        top5_compare_page_dataframe_state.set(_compare_top5_cache[cache_key])
+
+    @reactive.effect
+    async def load_compare_top5():
+        iso = selected_iso()
+        compare_year = int(input.compare_year())
+
+        cache_key = (iso, compare_year)
+        if cache_key not in _compare_top5_cache:
+            ee_geometry = get_ee_geometry(data, iso)
+            _compare_top5_cache[cache_key] = await asyncio.to_thread(
+                compute_top5_dataframe_for_year, iso, compare_year, ee_geometry
+            )
+
+        compare_top5_dataframe_state.set(_compare_top5_cache[cache_key])
+
     @output
     @render.text
     def top5_header():
         return f"Top 5 regions with highest degradation risk ({selected_year()})"
+
+    @output
+    @render.text
+    def top5_header_compare_page():
+        return f"Top 5 regions with highest degradation risk ({input.top5_compare_page_year()})"
+
+    @output
+    @render.data_frame
+    def top5_infobox_compare_page():
+        return render.DataGrid(top5_compare_page_dataframe_state(), width="100%")
+
+    @output
+    @render.text
+    def compare_top5_header():
+        return f"Top 5 regions with highest degradation risk ({input.compare_year()})"
+
+    @output
+    @render.data_frame
+    def compare_top5_infobox():
+        return render.DataGrid(compare_top5_dataframe_state(), width="100%")
 
     @output
     @render.text

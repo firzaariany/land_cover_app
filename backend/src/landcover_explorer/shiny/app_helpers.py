@@ -4,6 +4,25 @@ import plotly.express as px
 from htmltools import Tag
 from shiny import ui
 
+from landcover_explorer.settings import Settings
+from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
+    BIOMASS_BAND_NAME,
+    FOREST_BAND_NAME,
+    FOREST_COLLECTION,
+    aggregate_for_resampling,
+    assign_biomass_risk_score,
+    assign_forest_type_risk_score,
+    compute_aggregate_risk_score,
+    load_image,
+)
+from landcover_explorer.knowledgebase.distance_risk_assets import load_distance_risk_score
+from landcover_explorer.knowledgebase.risk_stats import (
+    ISO_TO_ADM0_NAME,
+    top_n_admin1_by_risk3_area,
+)
+
+settings = Settings()
+
 
 def get_iso_feature(data: dict, iso: str) -> dict:
     return next(f for f in data["features"] if f["properties"]["GID_0"] == iso)
@@ -47,6 +66,30 @@ def top5_ranking_dataframe(ranking: list[dict] | None) -> pd.DataFrame:
         ],
         columns=columns,
     )
+
+
+def compute_top5_dataframe_for_year(iso: str, year: int, ee_geometry: ee.Geometry) -> pd.DataFrame:
+    """Standalone aggregate-risk pipeline for a single (iso, year): forest + biomass
+    + distance risk scores, combined and ranked by admin1. Used by the Compare Years
+    page, which needs a top-5 table for an arbitrary year independent of the main
+    map's selected year."""
+    if iso not in ISO_TO_ADM0_NAME:
+        return top5_ranking_dataframe(None)
+
+    forest_dataset = load_image(FOREST_COLLECTION, FOREST_BAND_NAME, year, ee_geometry)
+    biomass_image = load_image(settings.biomass_collection_id, BIOMASS_BAND_NAME, year, ee_geometry)
+    if forest_dataset is None or biomass_image is None:
+        return top5_ranking_dataframe(None)
+
+    forest_risk_score = assign_forest_type_risk_score(forest_dataset)
+    biomass_risk_score = assign_biomass_risk_score(aggregate_for_resampling(biomass_image))
+    distance_risk_score = load_distance_risk_score(iso, year)
+
+    aggregate_risk_score = compute_aggregate_risk_score(
+        biomass_risk_score, forest_risk_score, distance_risk_score
+    )
+    top5_ranking = top_n_admin1_by_risk3_area(iso, aggregate_risk_score, n=5)
+    return top5_ranking_dataframe(top5_ranking)
 
 
 def style_bar_fig(fig, xaxis_dtick: int | None = None):
