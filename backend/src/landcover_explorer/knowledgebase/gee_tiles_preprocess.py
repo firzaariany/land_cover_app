@@ -25,9 +25,6 @@ BIOMASS_BAND_NAME = settings.biomass_collection_band_name
 FOREST_RISK_SCORE = 3
 MAX_DISTANCE_TO_LOSS_M = 3000
 
-# Weights for compute_aggregate_risk_score — biomass and proximity to recent loss are
-# weighted equally and dominate over static forest presence, since both indicate active
-# threat rather than mere forest cover.
 AGB_RISK_WEIGHT = 0.4
 FOREST_RISK_WEIGHT = 0.2
 DISTANCE_RISK_WEIGHT = 0.4
@@ -51,6 +48,12 @@ def load_image(
         return None
     image = filtered.first()
     return image.clip(geometry) if geometry is not None else image
+
+
+def get_latest_available_year(collection_id: str) -> int:
+    """Calendar year of the most recent image in collection_id."""
+    latest_image = ee.ImageCollection(collection_id).sort("system:time_start", False).first()
+    return ee.Date(latest_image.get("system:time_start")).get("year").getInfo()
 
 
 def load_forest_change_image(band_name: str, geometry: ee.Geometry | None = None) -> ee.Image:

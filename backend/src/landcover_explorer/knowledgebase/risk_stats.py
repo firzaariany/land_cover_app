@@ -22,7 +22,6 @@ ISO_TO_ADM0_NAME = {
     "CRI": "Costa Rica",
     "NOR": "Norway",
     "IDN": "Indonesia",
-    "COD": "Democratic Republic of the Congo",
     "JPN": "Japan",
 }
 
