@@ -542,6 +542,18 @@ wheels = [
 ]
 
 [[package]]
+name = "faicons"
+version = "0.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "htmltools" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/06/e8/c12ef85c4444616ab1c1e96d5ecbadc8046d40b34797308846a2cfc06c80/faicons-0.2.2.tar.gz", hash = "sha256:6b7d7b19180179b6b83783f91bf6c9311c0f00ae0f97d41be1d24d9942361659", size = 604434, upload-time = "2024-01-16T23:27:21.634Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/65/3c/1db1b0f878319bb227f35a0fca7cad64e1f528b518bcab1a708da305c86d/faicons-0.2.2-py3-none-any.whl", hash = "sha256:d45d7c2635b53582a3375c67d7e975a28a91d2c16ef5f6b5033b5cdd507224b6", size = 607225, upload-time = "2024-01-16T23:27:19.475Z" },
+]
+
+[[package]]
 name = "fonttools"
 version = "4.63.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2460,6 +2472,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "earthengine-api" },
+    { name = "faicons" },
     { name = "geopandas" },
     { name = "ipyleaflet" },
     { name = "matplotlib" },
@@ -2486,6 +2499,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "earthengine-api" },
+    { name = "faicons", specifier = ">=0.2.2" },
     { name = "geopandas" },
     { name = "ipyleaflet" },
     { name = "matplotlib", specifier = ">=3.11.0" },

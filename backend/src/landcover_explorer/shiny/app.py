@@ -21,6 +21,7 @@ from landcover_explorer.knowledgebase.risk_stats import (
     top_n_admin1_collection_by_risk3_area,
 )
 from landcover_explorer.shiny.app_helpers import (
+    compute_forest_coverage_pct,
     compute_top5_dataframe_for_year,
     error_fig,
     get_ee_geometry,
@@ -31,6 +32,7 @@ from landcover_explorer.shiny.app_helpers import (
 )
 
 import asyncio
+import faicons as fa
 import geopandas as gpd
 import json
 import math
@@ -80,6 +82,12 @@ FOREST_LAYER_NAME = "Forest cover"
 BIOMASS_LAYER_NAME = "Above-ground biomass risk"
 AGGREGATE_LAYER_NAME = "Aggregate risk score"
 TOP5_LAYER_NAME = "Top 5 highest-risk regions"
+
+ICONS = {
+    "region_at_risk": fa.icon_svg("exclamation", "solid"),
+    "trending_up": fa.icon_svg("arrow-trend-up", "solid"),
+    "trending_down": fa.icon_svg("arrow-trend-down", "solid")
+}
 
 # -----------------
 # DATA PREPARATION
@@ -159,6 +167,16 @@ app_ui = ui.page_sidebar(
                     fillable=True,
                 ),
             ),
+            ui.layout_columns(
+                ui.value_box(
+                    ui.output_text("persistent_top_region_title"),
+                    ui.output_text("persistent_top_region"),
+                    showcase=ICONS["region_at_risk"],
+                    height="150px",
+                ),
+                ui.output_ui("forest_cover_trend_card"),
+                ui.output_ui("compare_top5_total_card"),
+            ),
         ),
     ),
     fillable=True,
@@ -176,9 +194,13 @@ def server(input, output, session):
 
     _forest_layer_cache: dict = {}
     _compare_top5_cache: dict = {}
+    _forest_coverage_cache: dict = {}
     top5_dataframe_state = reactive.Value(top5_ranking_dataframe(None))
     top5_compare_page_dataframe_state = reactive.Value(top5_ranking_dataframe(None))
+    top5_compare_page_total_state = reactive.Value(0.0)
     compare_top5_dataframe_state = reactive.Value(top5_ranking_dataframe(None))
+    compare_top5_total_state = reactive.Value(0.0)
+    forest_cover_trend_state = reactive.Value(None)
 
     border_layer = GeoJSON(
         data={"type": "FeatureCollection", "features": []},
@@ -418,7 +440,9 @@ def server(input, output, session):
                 compute_top5_dataframe_for_year, iso, year, ee_geometry
             )
 
-        top5_compare_page_dataframe_state.set(_compare_top5_cache[cache_key])
+        df, total_area_km2 = _compare_top5_cache[cache_key]
+        top5_compare_page_dataframe_state.set(df)
+        top5_compare_page_total_state.set(total_area_km2)
 
     @reactive.effect
     async def load_compare_top5():
@@ -432,7 +456,34 @@ def server(input, output, session):
                 compute_top5_dataframe_for_year, iso, compare_year, ee_geometry
             )
 
-        compare_top5_dataframe_state.set(_compare_top5_cache[cache_key])
+        df, total_area_km2 = _compare_top5_cache[cache_key]
+        compare_top5_dataframe_state.set(df)
+        compare_top5_total_state.set(total_area_km2)
+
+    @reactive.effect
+    async def load_forest_cover_trend():
+        iso = selected_iso()
+        year_min, year_max = sorted(
+            (int(input.top5_compare_page_year()), int(input.compare_year()))
+        )
+
+        async def coverage_for(year):
+            cache_key = (iso, year)
+            if cache_key not in _forest_coverage_cache:
+                ee_geometry = get_ee_geometry(data, iso)
+                _forest_coverage_cache[cache_key] = await asyncio.to_thread(
+                    compute_forest_coverage_pct, iso, year, ee_geometry
+                )
+            return _forest_coverage_cache[cache_key]
+
+        cover_min, cover_max = await coverage_for(year_min), await coverage_for(year_max)
+
+        forest_cover_trend_state.set({
+            "year_min": year_min,
+            "year_max": year_max,
+            "cover_min": cover_min,
+            "cover_max": cover_max,
+        })
 
     @output
     @render.text
@@ -458,6 +509,70 @@ def server(input, output, session):
     @render.data_frame
     def compare_top5_infobox():
         return render.DataGrid(compare_top5_dataframe_state(), width="100%")
+
+    @output
+    @render.ui
+    def compare_top5_total_card():
+        year_a, year_b = int(input.top5_compare_page_year()), int(input.compare_year())
+        totals = {year_a: top5_compare_page_total_state(), year_b: compare_top5_total_state()}
+        year_min, year_max = sorted((year_a, year_b))
+        total_min, total_max = totals[year_min], totals[year_max]
+
+        trending_up = total_max > total_min
+        icon = ICONS["trending_up"] if trending_up else ICONS["trending_down"]
+        direction = "increasing" if trending_up else "decreasing"
+        diff = abs(total_max - total_min)
+
+        return ui.value_box(
+            f"Forest area at risk is {direction} between {year_min} and {year_max} by",
+            f"{diff:,.1f} km2",
+            showcase=icon,
+            height="150px",
+        )
+
+    @output
+    @render.text
+    def persistent_top_region_title():
+        year_min, year_max = sorted((int(input.top5_compare_page_year()), int(input.compare_year())))
+        return f"Region at risk in {year_min} and {year_max}"
+
+    @output
+    @render.text
+    def persistent_top_region():
+        df_a = top5_compare_page_dataframe_state()
+        df_b = compare_top5_dataframe_state()
+
+        if df_a.empty or df_b.empty:
+            return "N/A"
+
+        region_a, region_b = df_a["Region"].iloc[0], df_b["Region"].iloc[0]
+        return region_a if region_a == region_b else "None"
+
+    @output
+    @render.ui
+    def forest_cover_trend_card():
+        trend = forest_cover_trend_state()
+        if trend is None or trend["cover_min"] is None or trend["cover_max"] is None:
+            value = "N/A"
+            icon = ICONS["trending_down"]
+        else:
+            trending_up = trend["cover_max"] > trend["cover_min"]
+            icon = ICONS["trending_up"] if trending_up else ICONS["trending_down"]
+            value = f"{trend['cover_min']}% → {trend['cover_max']}%"
+
+        if trend:
+            year_min, year_max = trend["year_min"], trend["year_max"]
+        else:
+            year_min, year_max = sorted(
+                (int(input.top5_compare_page_year()), int(input.compare_year()))
+            )
+
+        return ui.value_box(
+            f"Forest cover trend between {year_min} and {year_max}",
+            value,
+            showcase=icon,
+            height="150px",
+        )
 
     @output
     @render.text

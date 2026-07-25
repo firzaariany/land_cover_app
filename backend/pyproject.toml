@@ -24,6 +24,7 @@ dependencies = [
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.1",
     "matplotlib>=3.11.0",
+    "faicons>=0.2.2",
 ]
 
 [dependency-groups]

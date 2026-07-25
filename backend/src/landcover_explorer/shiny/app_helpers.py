@@ -16,9 +16,10 @@ from landcover_explorer.knowledgebase.gee_tiles_preprocess import (
     load_image,
 )
 from landcover_explorer.knowledgebase.distance_risk_assets import load_distance_risk_score
+from landcover_explorer.knowledgebase.land_cover_stats import calculate_coverage
 from landcover_explorer.knowledgebase.risk_stats import (
     ISO_TO_ADM0_NAME,
-    top_n_admin1_by_risk3_area,
+    rank_admin1_by_risk3_area,
 )
 
 settings = Settings()
@@ -68,18 +69,28 @@ def top5_ranking_dataframe(ranking: list[dict] | None) -> pd.DataFrame:
     )
 
 
-def compute_top5_dataframe_for_year(iso: str, year: int, ee_geometry: ee.Geometry) -> pd.DataFrame:
+def compute_top5_dataframe_for_year(
+    iso: str, year: int, ee_geometry: ee.Geometry
+) -> tuple[pd.DataFrame, float]:
     """Standalone aggregate-risk pipeline for a single (iso, year): forest + biomass
     + distance risk scores, combined and ranked by admin1. Used by the Compare Years
     page, which needs a top-5 table for an arbitrary year independent of the main
-    map's selected year."""
+    map's selected year.
+
+    Each of the top 5 regions' area is expressed as a percentage of the total
+    at-risk area across ALL admin1 regions (not just the top 5), so the columns
+    can sum to less than 100%.
+
+    Returns (top5_dataframe, total_risk3_area_km2) — the total covers every admin1
+    region, not just the top 5, so callers can show it alongside the table."""
+    columns = ["Region", "Area (km2)", "% of Total"]
     if iso not in ISO_TO_ADM0_NAME:
-        return top5_ranking_dataframe(None)
+        return pd.DataFrame(columns=columns), 0.0
 
     forest_dataset = load_image(FOREST_COLLECTION, FOREST_BAND_NAME, year, ee_geometry)
     biomass_image = load_image(settings.biomass_collection_id, BIOMASS_BAND_NAME, year, ee_geometry)
     if forest_dataset is None or biomass_image is None:
-        return top5_ranking_dataframe(None)
+        return pd.DataFrame(columns=columns), 0.0
 
     forest_risk_score = assign_forest_type_risk_score(forest_dataset)
     biomass_risk_score = assign_biomass_risk_score(aggregate_for_resampling(biomass_image))
@@ -88,8 +99,42 @@ def compute_top5_dataframe_for_year(iso: str, year: int, ee_geometry: ee.Geometr
     aggregate_risk_score = compute_aggregate_risk_score(
         biomass_risk_score, forest_risk_score, distance_risk_score
     )
-    top5_ranking = top_n_admin1_by_risk3_area(iso, aggregate_risk_score, n=5)
-    return top5_ranking_dataframe(top5_ranking)
+
+    full_ranking = rank_admin1_by_risk3_area(iso, aggregate_risk_score)
+    if not full_ranking:
+        return pd.DataFrame(columns=columns), 0.0
+
+    total_risk3_area_m2 = sum(region["risk3_area_m2"] for region in full_ranking)
+
+    df = pd.DataFrame(
+        [
+            [
+                region["name"],
+                round(region["risk3_area_m2"] / 1e6, 1),
+                round(region["risk3_area_m2"] / total_risk3_area_m2 * 100, 1)
+                if total_risk3_area_m2
+                else 0.0,
+            ]
+            for region in full_ranking[:5]
+        ],
+        columns=columns,
+    )
+    return df, round(total_risk3_area_m2 / 1e6, 1)
+
+
+def compute_forest_coverage_pct(iso: str, year: int, ee_geometry: ee.Geometry) -> float | None:
+    """Forest cover percentage for a single (iso, year), or None if no forest
+    dataset is available for that year. Used to compare forest cover trend
+    between two years on the Compare Years page."""
+    forest_dataset = load_image(FOREST_COLLECTION, FOREST_BAND_NAME, year, ee_geometry)
+    if forest_dataset is None:
+        return None
+
+    forest_risk_score = assign_forest_type_risk_score(forest_dataset)
+    coverage = calculate_coverage(
+        iso=iso, year=year, country_geometry=ee_geometry, forest_cover=forest_risk_score
+    )
+    return coverage["coverage_pct"]
 
 
 def style_bar_fig(fig, xaxis_dtick: int | None = None):
