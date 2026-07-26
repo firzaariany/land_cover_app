@@ -24,6 +24,10 @@ from landcover_explorer.knowledgebase.risk_stats import (
 
 settings = Settings()
 
+FOREST_COVER_COLOR = "#05450a"
+BIOMASS_RISK_PALETTE = ["#ffffb2", "#fecc5c", "#fd8d3c", "#e31a1c"]
+AGGREGATE_RISK_PALETTE = ["#ffffff", "#ffff00", "#ff8c00", "#ff0000", "#8b0000"]
+
 
 def get_iso_feature(data: dict, iso: str) -> dict:
     return next(f for f in data["features"] if f["properties"]["GID_0"] == iso)
@@ -56,7 +60,7 @@ def year_slider_with_ticks(min_year: int, max_year: int, value: int, tick_step: 
 def top5_ranking_dataframe(ranking: list[dict] | None) -> pd.DataFrame:
     """Build a table-ready DataFrame from the top-5 admin1 ranking (see risk_stats.py),
     for rendering with shiny.render.data_frame instead of hand-built HTML."""
-    columns = ["Rank", "Region", "Area (km2)"]
+    columns = ["Rank", "Region", "Area (km²)"]
     if not ranking:
         return pd.DataFrame(columns=columns)
 
@@ -83,7 +87,7 @@ def compute_top5_dataframe_for_year(
 
     Returns (top5_dataframe, total_risk3_area_km2) — the total covers every admin1
     region, not just the top 5, so callers can show it alongside the table."""
-    columns = ["Region", "Area (km2)", "% of Total"]
+    columns = ["Region", "Area (km²)", "% of Total"]
     if iso not in ISO_TO_ADM0_NAME:
         return pd.DataFrame(columns=columns), 0.0
 
@@ -163,3 +167,35 @@ def error_fig(message: str):
     fig = px.bar(x=[], y=[], title=message)
     fig.update_layout(height=300)
     return fig
+
+
+def _legend_swatch(color: str, label: str) -> str:
+    return (
+        '<div style="display:flex;align-items:center;margin:2px 0;">'
+        f'<span style="display:inline-block;width:14px;height:14px;background:{color};'
+        'border:1px solid #999;margin-right:6px;flex-shrink:0;"></span>'
+        f'<span style="font-size:12px;">{label}</span></div>'
+    )
+
+
+def build_map_legend_html() -> str:
+    """HTML legend for the map's forest cover, biomass risk, and aggregate risk
+    layers, using the same palettes passed to their respective getMapId calls."""
+    gradient_css = f"linear-gradient(to right, {', '.join(AGGREGATE_RISK_PALETTE)})"
+
+    return (
+        '<div style="background:white;padding:8px 10px;border-radius:4px;'
+        'box-shadow:0 1px 4px rgba(0,0,0,0.3);font-family:sans-serif;max-width:200px;">'
+        '<div style="font-weight:bold;font-size:12px;margin-bottom:4px;">Forest cover</div>'
+        + _legend_swatch(FOREST_COVER_COLOR, "Forest present")
+        + '<div style="font-weight:bold;font-size:12px;margin:8px 0 4px;">Above-ground biomass risk</div>'
+        + _legend_swatch(BIOMASS_RISK_PALETTE[0], "Low")
+        + _legend_swatch(BIOMASS_RISK_PALETTE[1], "Moderate")
+        + _legend_swatch(BIOMASS_RISK_PALETTE[2], "High")
+        + _legend_swatch(BIOMASS_RISK_PALETTE[3], "Very high")
+        + '<div style="font-weight:bold;font-size:12px;margin:8px 0 4px;">Aggregate risk score</div>'
+        + f'<div style="height:12px;border:1px solid #999;background:{gradient_css};"></div>'
+        + '<div style="display:flex;justify-content:space-between;font-size:11px;margin-top:2px;">'
+        "<span>Low</span><span>Very high</span></div>"
+        "</div>"
+    )

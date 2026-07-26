@@ -21,6 +21,10 @@ from landcover_explorer.knowledgebase.risk_stats import (
     top_n_admin1_collection_by_risk3_area,
 )
 from landcover_explorer.shiny.app_helpers import (
+    AGGREGATE_RISK_PALETTE,
+    BIOMASS_RISK_PALETTE,
+    FOREST_COVER_COLOR,
+    build_map_legend_html,
     compute_forest_coverage_pct,
     compute_top5_dataframe_for_year,
     error_fig,
@@ -46,6 +50,7 @@ from ipyleaflet import (
     LayersControl,
     GeoJSON,
     Popup,
+    WidgetControl,
 )
 from ipywidgets import HTML
 from pathlib import Path
@@ -84,7 +89,7 @@ AGGREGATE_LAYER_NAME = "Aggregate risk score"
 TOP5_LAYER_NAME = "Top 5 highest-risk regions"
 
 ICONS = {
-    "region_at_risk": fa.icon_svg("exclamation", "solid"),
+    "region_at_risk": fa.icon_svg("triangle-exclamation", "solid", width="1.5em"),
     "trending_up": fa.icon_svg("arrow-trend-up", "solid"),
     "trending_down": fa.icon_svg("arrow-trend-down", "solid")
 }
@@ -118,7 +123,17 @@ app_ui = ui.page_sidebar(
     ),
     ui.navset_tab(
         ui.nav_panel(
-            "Explore Forest",
+            "Map",
+            ui.layout_columns(
+                ui.value_box(
+                    ui.output_text("insight_card_persistent_top_region_title"),
+                    ui.output_text("insight_card_persistent_top_region"),
+                    showcase=ICONS["region_at_risk"],
+                    height="150px",
+                ),
+                ui.output_ui("insight_card_forest_cover_trend"),
+                ui.output_ui("insight_card_compare_top5_total_risk"),
+            ),
             ui.card(
                 output_widget("map"),
                 height="500px",
@@ -126,59 +141,42 @@ app_ui = ui.page_sidebar(
             ),
             ui.layout_columns(
                 ui.card(
-                    ui.card_header(ui.output_text("top5_header")),
-                    ui.output_data_frame("top5_infobox"),
+                    ui.card_header(ui.output_text("insight_card_top5_header_compare_year1")),
+                    ui.input_select(
+                        "insight_card_top5_compare_year1",
+                        "Year",
+                        choices=[str(y) for y in range(MIN_YEAR, MAX_YEAR + 1)],
+                        selected=str(DEFAULT_YEAR),
+                    ),
+                    ui.output_data_frame("insight_card_top5_infobox_compare_year1"),
                     height="400px",
                     fillable=True,
                 ),
                 ui.card(
-                    ui.card_header(ui.output_text("forest_loss_header")),
-                    output_widget("forest_area_plot"),
+                    ui.card_header(ui.output_text("insight_card_top5_header_compare_year2")),
+                    ui.input_select(
+                        "insight_card_top5_compare_year2",
+                        "Compare with year",
+                        choices=[str(y) for y in range(MIN_YEAR, MAX_YEAR + 1)],
+                        selected=str(max(MIN_YEAR, DEFAULT_YEAR - 10)),
+                    ),
+                    ui.output_data_frame("insight_card_top5_infobox_compare_year2"),
                     height="400px",
                     fillable=True,
                 ),
             ),
         ),
         ui.nav_panel(
-            "Compare Years",
-            ui.layout_columns(
-                ui.card(
-                    ui.card_header(ui.output_text("top5_header_compare_page")),
-                    ui.input_select(
-                        "top5_compare_page_year",
-                        "Year",
-                        choices=[str(y) for y in range(MIN_YEAR, MAX_YEAR + 1)],
-                        selected=str(DEFAULT_YEAR),
-                    ),
-                    ui.output_data_frame("top5_infobox_compare_page"),
-                    height="400px",
-                    fillable=True,
-                ),
-                ui.card(
-                    ui.card_header(ui.output_text("compare_top5_header")),
-                    ui.input_select(
-                        "compare_year",
-                        "Compare with year",
-                        choices=[str(y) for y in range(MIN_YEAR, MAX_YEAR + 1)],
-                        selected=str(max(MIN_YEAR, DEFAULT_YEAR - 10)),
-                    ),
-                    ui.output_data_frame("compare_top5_infobox"),
-                    height="400px",
-                    fillable=True,
-                ),
-            ),
-            ui.layout_columns(
-                ui.value_box(
-                    ui.output_text("persistent_top_region_title"),
-                    ui.output_text("persistent_top_region"),
-                    showcase=ICONS["region_at_risk"],
-                    height="150px",
-                ),
-                ui.output_ui("forest_cover_trend_card"),
-                ui.output_ui("compare_top5_total_card"),
+            "Graphs",
+            ui.card(
+                ui.card_header(ui.output_text("graph_forest_loss_header")),
+                output_widget("graph_forest_area_plot", height="100%"),
+                height="400px",
+                fillable=True,
             ),
         ),
     ),
+    title="Forest Degradation Risk",
     fillable=True,
 )
 
@@ -190,12 +188,14 @@ app_ui = ui.page_sidebar(
 def server(input, output, session):
     m = Map()
     m.add_control(LayersControl(collapsed=False))
+    m.add_control(
+        WidgetControl(widget=HTML(build_map_legend_html()), position="bottomright")
+    )
     register_widget("map", m)
 
     _forest_layer_cache: dict = {}
     _compare_top5_cache: dict = {}
     _forest_coverage_cache: dict = {}
-    top5_dataframe_state = reactive.Value(top5_ranking_dataframe(None))
     top5_compare_page_dataframe_state = reactive.Value(top5_ranking_dataframe(None))
     top5_compare_page_total_state = reactive.Value(0.0)
     compare_top5_dataframe_state = reactive.Value(top5_ranking_dataframe(None))
@@ -259,7 +259,9 @@ def server(input, output, session):
                 forest_dataset = load_image(FOREST_COLLECTION, FOREST_BAND_NAME, year, ee_geometry)
                 if forest_dataset is not None:
                     forest_risk_score = assign_forest_type_risk_score(forest_dataset)
-                    forest_map_id = forest_risk_score.getMapId({"min": 3, "max": 3, "palette": "#05450a"})
+                    forest_map_id = forest_risk_score.getMapId(
+                        {"min": 3, "max": 3, "palette": FOREST_COVER_COLOR}
+                    )
                     coverage = calculate_coverage(
                         iso=iso,
                         year=year,
@@ -282,7 +284,7 @@ def server(input, output, session):
                     biomass_map_id = biomass_risk_score.getMapId({
                         "min": 0,
                         "max": 3,
-                        "palette": ["#ffffb2", "#fecc5c", "#fd8d3c", "#e31a1c"],
+                        "palette": BIOMASS_RISK_PALETTE,
                     })
                     biomass_result = {"tile_url": biomass_map_id["tile_fetcher"].url_format}
 
@@ -301,7 +303,7 @@ def server(input, output, session):
                     aggregate_map_id = aggregate_risk_score.getMapId({
                         "min": 0,
                         "max": 3,
-                        "palette": ["#ffffff", "#ffff00", "#ff8c00", "#ff0000", "#8b0000"],
+                        "palette": AGGREGATE_RISK_PALETTE,
                     })
                     top5_ranking = top_n_admin1_by_risk3_area(iso, aggregate_risk_score, n=5)
                     top5_collection = top_n_admin1_collection_by_risk3_area(
@@ -392,8 +394,6 @@ def server(input, output, session):
                 type="warning",
                 duration=8,
             )
-        top5_dataframe_state.set(layer_data["top5_dataframe"])
-
         coverage_text = (
             f"Forest cover {year}: {layer_data['coverage']['coverage_pct']}%"
             if layer_data["coverage"]
@@ -431,7 +431,7 @@ def server(input, output, session):
     @reactive.effect
     async def load_top5_compare_page():
         iso = selected_iso()
-        year = int(input.top5_compare_page_year())
+        year = int(input.insight_card_top5_compare_year1())
 
         cache_key = (iso, year)
         if cache_key not in _compare_top5_cache:
@@ -447,7 +447,7 @@ def server(input, output, session):
     @reactive.effect
     async def load_compare_top5():
         iso = selected_iso()
-        compare_year = int(input.compare_year())
+        compare_year = int(input.insight_card_top5_compare_year2())
 
         cache_key = (iso, compare_year)
         if cache_key not in _compare_top5_cache:
@@ -464,7 +464,7 @@ def server(input, output, session):
     async def load_forest_cover_trend():
         iso = selected_iso()
         year_min, year_max = sorted(
-            (int(input.top5_compare_page_year()), int(input.compare_year()))
+            (int(input.insight_card_top5_compare_year1()), int(input.insight_card_top5_compare_year2()))
         )
 
         async def coverage_for(year):
@@ -487,33 +487,28 @@ def server(input, output, session):
 
     @output
     @render.text
-    def top5_header():
-        return f"Top 5 regions with highest degradation risk ({selected_year()})"
-
-    @output
-    @render.text
-    def top5_header_compare_page():
-        return f"Top 5 regions with highest degradation risk ({input.top5_compare_page_year()})"
+    def insight_card_top5_header_compare_year1():
+        return f"Top 5 regions with highest degradation risk ({input.insight_card_top5_compare_year1()})"
 
     @output
     @render.data_frame
-    def top5_infobox_compare_page():
+    def insight_card_top5_infobox_compare_year1():
         return render.DataGrid(top5_compare_page_dataframe_state(), width="100%")
 
     @output
     @render.text
-    def compare_top5_header():
-        return f"Top 5 regions with highest degradation risk ({input.compare_year()})"
+    def insight_card_top5_header_compare_year2():
+        return f"Top 5 regions with highest degradation risk ({input.insight_card_top5_compare_year2()})"
 
     @output
     @render.data_frame
-    def compare_top5_infobox():
+    def insight_card_top5_infobox_compare_year2():
         return render.DataGrid(compare_top5_dataframe_state(), width="100%")
 
     @output
     @render.ui
-    def compare_top5_total_card():
-        year_a, year_b = int(input.top5_compare_page_year()), int(input.compare_year())
+    def insight_card_compare_top5_total_risk():
+        year_a, year_b = int(input.insight_card_top5_compare_year1()), int(input.insight_card_top5_compare_year2())
         totals = {year_a: top5_compare_page_total_state(), year_b: compare_top5_total_state()}
         year_min, year_max = sorted((year_a, year_b))
         total_min, total_max = totals[year_min], totals[year_max]
@@ -525,20 +520,22 @@ def server(input, output, session):
 
         return ui.value_box(
             f"Forest area at risk is {direction} between {year_min} and {year_max} by",
-            f"{diff:,.1f} km2",
+            f"{diff:,.1f} km²",
             showcase=icon,
             height="150px",
         )
 
     @output
     @render.text
-    def persistent_top_region_title():
-        year_min, year_max = sorted((int(input.top5_compare_page_year()), int(input.compare_year())))
+    def insight_card_persistent_top_region_title():
+        year_min, year_max = sorted(
+            (int(input.insight_card_top5_compare_year1()), int(input.insight_card_top5_compare_year2()))
+        )
         return f"Region at risk in {year_min} and {year_max}"
 
     @output
     @render.text
-    def persistent_top_region():
+    def insight_card_persistent_top_region():
         df_a = top5_compare_page_dataframe_state()
         df_b = compare_top5_dataframe_state()
 
@@ -550,7 +547,7 @@ def server(input, output, session):
 
     @output
     @render.ui
-    def forest_cover_trend_card():
+    def insight_card_forest_cover_trend():
         trend = forest_cover_trend_state()
         if trend is None or trend["cover_min"] is None or trend["cover_max"] is None:
             value = "N/A"
@@ -564,7 +561,7 @@ def server(input, output, session):
             year_min, year_max = trend["year_min"], trend["year_max"]
         else:
             year_min, year_max = sorted(
-                (int(input.top5_compare_page_year()), int(input.compare_year()))
+                (int(input.insight_card_top5_compare_year1()), int(input.insight_card_top5_compare_year2()))
             )
 
         return ui.value_box(
@@ -576,13 +573,8 @@ def server(input, output, session):
 
     @output
     @render.text
-    def forest_loss_header():
+    def graph_forest_loss_header():
         return f"Forest loss by driver ({selected_year()})"
-
-    @output
-    @render.data_frame
-    def top5_infobox():
-        return render.DataGrid(top5_dataframe_state(), width="100%")
 
     @reactive.calc
     def gfw_forest_loss():
@@ -590,7 +582,7 @@ def server(input, output, session):
 
     @output
     @render_widget
-    def forest_area_plot():
+    def graph_forest_area_plot():
         try:
             df = gfw_forest_loss()
 
@@ -609,7 +601,6 @@ def server(input, output, session):
                 barmode="stack",
                 opacity=0.8,
                 template="plotly_white",
-                height=300,
             )
             return style_bar_fig(fig)
 
