@@ -24,6 +24,7 @@ from landcover_explorer.shiny.app_helpers import (
     AGGREGATE_RISK_PALETTE,
     BIOMASS_RISK_PALETTE,
     FOREST_COVER_COLOR,
+    build_annual_risk_stacked_bar,
     build_map_legend_html,
     compute_forest_coverage_pct,
     compute_top5_dataframe_for_year,
@@ -40,6 +41,7 @@ import faicons as fa
 import geopandas as gpd
 import json
 import math
+import pandas as pd
 import plotly.express as px
 from ipyleaflet import (
     DivIcon,
@@ -98,12 +100,26 @@ ICONS = {
 # DATA PREPARATION
 # -----------------
 
-# To be replaced with API call
+# Global administration border
 _GEOJSON_PATH = Path(__file__).parents[3] / settings.gadm_path
 
 with open(_GEOJSON_PATH, "r") as f:
     data = json.load(f)
     data_gdf = gpd.read_file(_GEOJSON_PATH).set_index(["GID_0"])
+
+# Annual total area at risk must be precomputed by scripts/export_distance_risk_assets.py.
+# It is set missing until until the script is run.
+_ANNUAL_RISK_CSV_PATH = Path(__file__).parents[3] / settings.annual_risk_csv_path
+_ANNUAL_RISK_COLUMNS = ["iso", "year", "region", "risk3_area_km2", "distance_risk_available"]
+if _ANNUAL_RISK_CSV_PATH.exists():
+    annual_risk_df = pd.read_csv(_ANNUAL_RISK_CSV_PATH)
+else:
+    print(
+        f"[warning] {_ANNUAL_RISK_CSV_PATH} not found — run "
+        "scripts/export_distance_risk_assets.py to generate it. The year-by-year "
+        "total area chart will show no data until then."
+    )
+    annual_risk_df = pd.DataFrame(columns=_ANNUAL_RISK_COLUMNS)
 
 # -----------------
 # PAGE BUILDER
@@ -171,6 +187,12 @@ app_ui = ui.page_sidebar(
             ui.card(
                 ui.card_header(ui.output_text("graph_forest_loss_header")),
                 output_widget("graph_forest_area_plot", height="100%"),
+                height="400px",
+                fillable=True,
+            ),
+            ui.card(
+                ui.card_header(ui.output_text("graph_annual_risk_header")),
+                output_widget("graph_annual_risk_plot", height="100%"),
                 height="400px",
                 fillable=True,
             ),
@@ -606,6 +628,19 @@ def server(input, output, session):
 
         except Exception as e:
             return error_fig(f"Error fetching data: {e}")
+
+    @output
+    @render.text
+    def graph_annual_risk_header():
+        return f"Total forest area at risk, categorized by region"
+
+    @output
+    @render_widget
+    def graph_annual_risk_plot():
+        try:
+            return build_annual_risk_stacked_bar(annual_risk_df, selected_iso())
+        except Exception as e:
+            return error_fig(f"Error building chart: {e}")
 
 
 app = App(app_ui, server)

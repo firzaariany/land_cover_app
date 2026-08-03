@@ -141,7 +141,7 @@ def compute_forest_coverage_pct(iso: str, year: int, ee_geometry: ee.Geometry) -
     return coverage["coverage_pct"]
 
 
-def style_bar_fig(fig, xaxis_dtick: int | None = None):
+def style_bar_fig(fig, xaxis_dtick: int | None = None, legend_title: str = "Driver"):
     fig.update_layout(
         autosize=True,
         margin=dict(l=40, r=160, t=60, b=60),
@@ -153,7 +153,7 @@ def style_bar_fig(fig, xaxis_dtick: int | None = None):
             yanchor="top",
             font=dict(size=10),
             bgcolor="rgba(0,0,0,0)",
-            title=dict(text="Driver", font=dict(size=11)),
+            title=dict(text=legend_title, font=dict(size=11)),
         ),
     )
     xaxis_kwargs = dict(showticklabels=True, tickfont=dict(size=10))
@@ -164,9 +164,61 @@ def style_bar_fig(fig, xaxis_dtick: int | None = None):
 
 
 def error_fig(message: str):
-    fig = px.bar(x=[], y=[], title=message)
+    fig = px.bar(pd.DataFrame({"x": [], "y": []}), x="x", y="y", title=message)
     fig.update_layout(height=300)
     return fig
+
+
+# Validated categorical palette (fixed hue order — see dataviz skill), slots 1-5.
+ANNUAL_RISK_TOP_N = 5
+ANNUAL_RISK_TOP_N_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
+ANNUAL_RISK_OTHER_COLOR = "#898781"  # muted gray for every region outside the top 5
+
+
+def build_annual_risk_stacked_bar(annual_risk_df: pd.DataFrame, iso: str):
+    """Stacked bar of annual risk-3 (highest risk) forest area by admin1 region for iso.
+    Colors iso's top 5 regions (by total risk-3 area across all years, so the color
+    assignment doesn't change if a different region briefly leads in one year) and
+    folds every other region into a single gray "Other" series. Mirrors the "Stacked
+    bar: annual risk-3 area by region" cell in reproject.ipynb."""
+    country_df = annual_risk_df[annual_risk_df["iso"] == iso]
+    if country_df.empty:
+        return error_fig(f"No annual risk data available for {iso}.")
+
+    top_regions = (
+        country_df.groupby("region")["risk3_area_km2"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(ANNUAL_RISK_TOP_N)
+        .index
+        .tolist()
+    )
+
+    plot_df = country_df.copy()
+    plot_df["region_group"] = plot_df["region"].where(plot_df["region"].isin(top_regions), "Other")
+    stacked_df = plot_df.groupby(["year", "region_group"], as_index=False)["risk3_area_km2"].sum()
+
+    color_map = dict(zip(top_regions, ANNUAL_RISK_TOP_N_COLORS)) | {"Other": ANNUAL_RISK_OTHER_COLOR}
+    # "Other" at the bottom of the stack, then lowest-ranked to highest-ranked so the
+    # top-1 region ends up on top.
+    category_order = ["Other"] + list(reversed(top_regions))
+
+    fig = px.bar(
+        stacked_df,
+        x="year",
+        y="risk3_area_km2",
+        color="region_group",
+        color_discrete_map=color_map,
+        category_orders={"region_group": category_order},
+        labels={
+            "year": "Year",
+            "risk3_area_km2": "Risk-3 forest area (km²)",
+            "region_group": "Region",
+        },
+        template="plotly_white",
+    )
+    fig.update_xaxes(type="category")
+    return style_bar_fig(fig, legend_title="Region")
 
 
 def _legend_swatch(color: str, label: str) -> str:
