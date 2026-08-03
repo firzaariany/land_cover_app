@@ -27,4 +27,4 @@ GIS_viz.ipynb
 
 # Application-specific things
 forest-health-dashboard-a46da1e6e071.json
-backend/data/distance_export_wait_estimates.csv
+backend/data/*.csv
