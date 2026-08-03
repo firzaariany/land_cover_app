@@ -38,6 +38,7 @@ settings = Settings()
 
 POLL_INTERVAL_SECONDS = 30
 ANNUAL_RISK_CSV_PATH = Path(__file__).parents[1] / "data" / "annual_risk_by_admin1.csv"
+ANNUAL_FOREST_COVER_CSV_PATH = Path(__file__).parents[1] / "data" / "annual_forest_cover_by_admin1.csv"
 
 
 def _load_geometries() -> dict[str, ee.Geometry]:
@@ -143,6 +144,61 @@ def compute_annual_risk_dataframe(
     return pd.DataFrame(records)
 
 
+def compute_annual_forest_cover_dataframe(
+    iso: str, geometry: ee.Geometry, latest_forest_year: int
+) -> pd.DataFrame:
+    """Per-admin1 forest area for iso, for every year MODIS forest cover has an image
+    (2001+). Unlike compute_annual_risk_dataframe, this isn't gated on AGB or distance
+    risk availability — it's driven directly off MODIS's own year list, since
+    _load_forest_risk_score's forest risk score is a constant 3 wherever a pixel is
+    forest (see assign_forest_type_risk_score) and masked otherwise, rank_admin1_by_risk3_area's
+    round()==3 area sum over that image is exactly each admin1 region's forest area.
+
+    Parameters
+    ----------
+    iso : str
+        GADM ISO3 country code (must be a key of ISO_TO_ADM0_NAME).
+    geometry : ee.Geometry
+        Country boundary to clip forest imagery and rank admin1 regions within.
+    latest_forest_year : int
+        Most recent calendar year with a MODIS forest-cover image (see
+        get_latest_available_year); years beyond this aren't expected in MODIS's own
+        year list, so it's only used to sanity-cap the loop.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per (year, admin1 region) with columns:
+        iso : str, year : int, region : str, forest_area_km2 : float.
+    """
+    forest_years = (
+        ee.ImageCollection(FOREST_COLLECTION)
+        .aggregate_array("system:time_start")
+        .map(lambda t: ee.Date(t).get("year"))
+        .distinct()
+        .sort()
+        .getInfo()
+    )
+
+    records = []
+    for year in forest_years:
+        if year > latest_forest_year:
+            continue
+        forest_risk_score_year = _load_forest_risk_score(iso, str(year), year, year, geometry)
+        if forest_risk_score_year is None:
+            continue
+
+        for region in rank_admin1_by_risk3_area(iso, forest_risk_score_year):
+            records.append({
+                "iso": iso,
+                "year": year,
+                "region": region["name"],
+                "forest_area_km2": region["risk3_area_m2"] / 1e6,
+            })
+
+    return pd.DataFrame(records)
+
+
 def main():
     credentials = ee.ServiceAccountCredentials(
         settings.google_earth_service_account, str(settings.google_earth_key)
@@ -206,6 +262,24 @@ def main():
         ANNUAL_RISK_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
         annual_risk_df.to_csv(ANNUAL_RISK_CSV_PATH, index=False)
         print(f"Saved annual risk dataframe to {ANNUAL_RISK_CSV_PATH} ({len(annual_risk_df)} rows)")
+
+    if ANNUAL_FOREST_COVER_CSV_PATH.exists():
+        print(f"\n[skip] annual forest cover dataframe already exists at {ANNUAL_FOREST_COVER_CSV_PATH}")
+    else:
+        print("\nComputing annual forest cover dataframe...")
+        annual_forest_cover_df = pd.concat(
+            [
+                compute_annual_forest_cover_dataframe(iso, geometry, latest_available_year)
+                for iso, geometry in geometries.items()
+            ],
+            ignore_index=True,
+        )
+        ANNUAL_FOREST_COVER_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        annual_forest_cover_df.to_csv(ANNUAL_FOREST_COVER_CSV_PATH, index=False)
+        print(
+            f"Saved annual forest cover dataframe to {ANNUAL_FOREST_COVER_CSV_PATH} "
+            f"({len(annual_forest_cover_df)} rows)"
+        )
 
 
 if __name__ == "__main__":

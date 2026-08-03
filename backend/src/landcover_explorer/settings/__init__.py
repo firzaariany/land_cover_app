@@ -49,5 +49,6 @@ class Settings(BaseSettings):
     gadm_path: Path = Path("data/global_adm_borders.geojson")
     distance_export_wait_cache_path: Path = Path("data/distance_export_wait_estimates.csv")
     annual_risk_csv_path: Path = Path("data/annual_risk_by_admin1.csv")
+    annual_forest_cover_csv_path: Path = Path("data/annual_forest_cover_by_admin1.csv")
 
     model_config = SettingsConfigDict(env_file=".env", extra="allow")

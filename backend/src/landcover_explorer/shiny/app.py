@@ -24,6 +24,7 @@ from landcover_explorer.shiny.app_helpers import (
     AGGREGATE_RISK_PALETTE,
     BIOMASS_RISK_PALETTE,
     FOREST_COVER_COLOR,
+    build_annual_forest_cover_stacked_bar,
     build_annual_risk_stacked_bar,
     build_map_legend_html,
     compute_forest_coverage_pct,
@@ -121,6 +122,19 @@ else:
     )
     annual_risk_df = pd.DataFrame(columns=_ANNUAL_RISK_COLUMNS)
 
+# Annual forest cover area, precomputed by the same script. Missing until it's run.
+_ANNUAL_FOREST_COVER_CSV_PATH = Path(__file__).parents[3] / settings.annual_forest_cover_csv_path
+_ANNUAL_FOREST_COVER_COLUMNS = ["iso", "year", "region", "forest_area_km2"]
+if _ANNUAL_FOREST_COVER_CSV_PATH.exists():
+    annual_forest_cover_df = pd.read_csv(_ANNUAL_FOREST_COVER_CSV_PATH)
+else:
+    print(
+        f"[warning] {_ANNUAL_FOREST_COVER_CSV_PATH} not found — run "
+        "scripts/export_distance_risk_assets.py to generate it. The annual forest "
+        "cover chart will show no data until then."
+    )
+    annual_forest_cover_df = pd.DataFrame(columns=_ANNUAL_FOREST_COVER_COLUMNS)
+
 # -----------------
 # PAGE BUILDER
 # -----------------
@@ -193,6 +207,12 @@ app_ui = ui.page_sidebar(
             ui.card(
                 ui.card_header(ui.output_text("graph_annual_risk_header")),
                 output_widget("graph_annual_risk_plot", height="100%"),
+                height="400px",
+                fillable=True,
+            ),
+            ui.card(
+                ui.card_header(ui.output_text("graph_annual_forest_cover_header")),
+                output_widget("graph_annual_forest_cover_plot", height="100%"),
                 height="400px",
                 fillable=True,
             ),
@@ -639,6 +659,19 @@ def server(input, output, session):
     def graph_annual_risk_plot():
         try:
             return build_annual_risk_stacked_bar(annual_risk_df, selected_iso())
+        except Exception as e:
+            return error_fig(f"Error building chart: {e}")
+
+    @output
+    @render.text
+    def graph_annual_forest_cover_header():
+        return f"Total forest cover area, categorized by region"
+
+    @output
+    @render_widget
+    def graph_annual_forest_cover_plot():
+        try:
+            return build_annual_forest_cover_stacked_bar(annual_forest_cover_df, selected_iso())
         except Exception as e:
             return error_fig(f"Error building chart: {e}")
 
