@@ -187,8 +187,9 @@ app_ui = ui.page_sidebar(
                     ui.input_select(
                         "insight_card_top5_compare_year2",
                         "Compare with year",
-                        choices=[str(y) for y in range(MIN_YEAR, MAX_YEAR + 1)],
-                        selected=str(max(MIN_YEAR, DEFAULT_YEAR - 10)),
+                        choices={"": "Select year"}
+                        | {str(y): str(y) for y in range(MIN_YEAR, MAX_YEAR + 1)},
+                        selected="",
                     ),
                     ui.output_data_frame("insight_card_top5_infobox_compare_year2"),
                     height="400px",
@@ -277,6 +278,10 @@ def server(input, output, session):
     @reactive.calc
     def selected_year():
         return input.year()
+
+    @reactive.effect
+    def sync_top5_compare_year1():
+        ui.update_select("insight_card_top5_compare_year1", selected=str(selected_year()))
 
     @reactive.effect
     async def load_forest_cover_layer():
@@ -489,6 +494,10 @@ def server(input, output, session):
     @reactive.effect
     async def load_compare_top5():
         iso = selected_iso()
+        if not input.insight_card_top5_compare_year2():
+            compare_top5_dataframe_state.set(top5_ranking_dataframe(None))
+            compare_top5_total_state.set(0.0)
+            return
         compare_year = int(input.insight_card_top5_compare_year2())
 
         cache_key = (iso, compare_year)
@@ -505,6 +514,9 @@ def server(input, output, session):
     @reactive.effect
     async def load_forest_cover_trend():
         iso = selected_iso()
+        if not input.insight_card_top5_compare_year2():
+            forest_cover_trend_state.set(None)
+            return
         year_min, year_max = sorted(
             (int(input.insight_card_top5_compare_year1()), int(input.insight_card_top5_compare_year2()))
         )
@@ -540,7 +552,10 @@ def server(input, output, session):
     @output
     @render.text
     def insight_card_top5_header_compare_year2():
-        return f"Top 5 regions with highest degradation risk ({input.insight_card_top5_compare_year2()})"
+        year = input.insight_card_top5_compare_year2()
+        if not year:
+            return "Top 5 regions with highest degradation risk"
+        return f"Top 5 regions with highest degradation risk ({year})"
 
     @output
     @render.data_frame
@@ -550,6 +565,13 @@ def server(input, output, session):
     @output
     @render.ui
     def insight_card_compare_top5_total_risk():
+        if not input.insight_card_top5_compare_year2():
+            return ui.value_box(
+                "Forest area at risk",
+                "Select a year to compare",
+                showcase=ICONS["trending_up"],
+                height="150px",
+            )
         year_a, year_b = int(input.insight_card_top5_compare_year1()), int(input.insight_card_top5_compare_year2())
         totals = {year_a: top5_compare_page_total_state(), year_b: compare_top5_total_state()}
         year_min, year_max = sorted((year_a, year_b))
@@ -570,6 +592,8 @@ def server(input, output, session):
     @output
     @render.text
     def insight_card_persistent_top_region_title():
+        if not input.insight_card_top5_compare_year2():
+            return "Region at risk"
         year_min, year_max = sorted(
             (int(input.insight_card_top5_compare_year1()), int(input.insight_card_top5_compare_year2()))
         )
@@ -601,13 +625,18 @@ def server(input, output, session):
 
         if trend:
             year_min, year_max = trend["year_min"], trend["year_max"]
+            title = f"Forest cover trend between {year_min} and {year_max}"
+        elif not input.insight_card_top5_compare_year2():
+            title = "Forest cover trend"
+            value = "Select a year to compare"
         else:
             year_min, year_max = sorted(
                 (int(input.insight_card_top5_compare_year1()), int(input.insight_card_top5_compare_year2()))
             )
+            title = f"Forest cover trend between {year_min} and {year_max}"
 
         return ui.value_box(
-            f"Forest cover trend between {year_min} and {year_max}",
+            title,
             value,
             showcase=icon,
             height="150px",
