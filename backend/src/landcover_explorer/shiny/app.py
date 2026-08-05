@@ -78,7 +78,6 @@ COUNTRY_NAMES = {
     "CRI": "Costa Rica",
     "NOR": "Norway",
     "IDN": "Indonesia",
-    "COD": "Democratic Republic of the Congo",
     "JPN": "Japan",
 }
 
@@ -88,7 +87,7 @@ DEFAULT_YEAR = 2020
 
 FOREST_LAYER_NAME = "Forest cover"
 BIOMASS_LAYER_NAME = "Above-ground biomass risk"
-AGGREGATE_LAYER_NAME = "Aggregate risk score"
+AGGREGATE_LAYER_NAME = "Degradation risk score"
 TOP5_LAYER_NAME = "Top 5 highest-risk regions"
 
 ICONS = {
