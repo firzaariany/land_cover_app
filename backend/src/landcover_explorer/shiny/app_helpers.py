@@ -263,7 +263,7 @@ def build_map_legend_html() -> str:
         + _legend_swatch(BIOMASS_RISK_PALETTE[1], "Moderate")
         + _legend_swatch(BIOMASS_RISK_PALETTE[2], "High")
         + _legend_swatch(BIOMASS_RISK_PALETTE[3], "Very high")
-        + '<div style="font-weight:bold;font-size:12px;margin:8px 0 4px;">Aggregate risk score</div>'
+        + '<div style="font-weight:bold;font-size:12px;margin:8px 0 4px;">Degradation risk score</div>'
         + f'<div style="height:12px;border:1px solid #999;background:{gradient_css};"></div>'
         + '<div style="display:flex;justify-content:space-between;font-size:11px;margin-top:2px;">'
         "<span>Low</span><span>Very high</span></div>"
